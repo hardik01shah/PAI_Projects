@@ -4,11 +4,12 @@ from sklearn.gaussian_process.kernels import *
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 from matplotlib import cm
 
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
-EXTENDED_EVALUATION = False
+EXTENDED_EVALUATION = True
 EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluation
 
 # Cost function constants
@@ -32,6 +33,7 @@ class Model(object):
 
         # TODO: Add custom initialization for your model here if necessary
 
+
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Predict the pollution concentration for a given set of city_areas.
@@ -47,8 +49,10 @@ class Model(object):
         gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
 
         # TODO: Use the GP posterior to form your predictions here
-        predictions = gp_mean
-
+        predictions, gp_std = self.gpr.predict(test_x_2D, return_std=True)
+        params = self.gpr.get_params()
+        print(params)
+        gp_mean = predictions
         return predictions, gp_mean, gp_std
 
     def fitting_model(self, train_y: np.ndarray,train_x_2D: np.ndarray):
@@ -59,6 +63,17 @@ class Model(object):
         """
 
         # TODO: Fit your model here
+        # RBF_kernel = 30.0 * RBF(length_scale=0.5)
+        RBF_kernel = 1.0 * RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2])
+        Dot_kernel = DotProduct()
+        Combibed_kernal = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
+        self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0).fit(train_x_2D, train_y)
+        # self.gpr = GaussianProcessRegressor(kernel=RBF_kernel, random_state=0).fit(train_x_2D, train_y)
+        # self.gpr = GaussianProcessRegressor(kernel=Dot_kernel, random_state=0).fit(train_x_2D, train_y)
+
+        ll = self.gpr.log_marginal_likelihood()
+        print(f"Log Likelihood: {ll}")
+        print(f"Kernel params: {RBF_kernel.get_params()}")
         pass
 
 # You don't have to change this function
@@ -178,6 +193,12 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> ty
     test_x_AREA = np.zeros((test_x.shape[0],), dtype=bool)
 
     #TODO: Extract the city_area information from the training and test features
+    train_x_2D = train_x[: ,:2]
+    train_x_AREA = train_x[: ,2]
+
+    
+    test_x_2D = test_x[: ,:2]
+    test_x_AREA = test_x[: ,2]
 
     assert train_x_2D.shape[0] == train_x_AREA.shape[0] and test_x_2D.shape[0] == test_x_AREA.shape[0]
     assert train_x_2D.shape[1] == 2 and test_x_2D.shape[1] == 2
@@ -194,15 +215,24 @@ def main():
 
     # Extract the city_area information
     train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
+
+    Km = KMeans(n_clusters=100, init='random', random_state=0).fit(np.column_stack((train_x_2D, train_y)))
+    labels = Km.labels_
+    points = []
+    for i in range(np.max(labels)):
+        points.append(np.where(labels== i)[0][:20])
+    points = np.array(points).reshape(-1)
     # Fit the model
     print('Fitting model')
     model = Model()
-    model.fitting_model(train_y,train_x_2D)
+    model.fitting_model(train_y[points], train_x_2D[points])
 
     # Predict on the test features
     print('Predicting on test features')
-    predictions = model.make_predictions(test_x_2D, test_x_AREA)
-    print(predictions)
+    predictions = model.make_predictions(train_x_2D[points], test_x_AREA)
+    print(f'MSE {np.mean(np.square(predictions[0]- train_y[points]))}')
+    predictions = model.make_predictions(train_x_2D, test_x_AREA)
+    print(f'MSE {np.mean(np.square(predictions[0]- train_y))}')
 
     if EXTENDED_EVALUATION:
         perform_extended_evaluation(model, output_dir='.')
