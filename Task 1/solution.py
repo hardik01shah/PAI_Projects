@@ -9,7 +9,7 @@ from matplotlib import cm
 
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
-EXTENDED_EVALUATION = True
+EXTENDED_EVALUATION = False
 EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluation
 
 # Cost function constants
@@ -64,7 +64,7 @@ class Model(object):
 
         # TODO: Fit your model here
         # RBF_kernel = 30.0 * RBF(length_scale=0.5)
-        RBF_kernel = 1.0 * RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2])
+        RBF_kernel = 1.0 * RBF(length_scale=0.1, length_scale_bounds=[1e-2, 1e2])
         Dot_kernel = DotProduct()
         Combibed_kernal = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
         self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0).fit(train_x_2D, train_y)
@@ -216,12 +216,19 @@ def main():
     # Extract the city_area information
     train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
 
-    Km = KMeans(n_clusters=100, init='random', random_state=0).fit(np.column_stack((train_x_2D, train_y)))
+
+    # Clustering and extracting points
+    Km = KMeans(n_clusters=300, init='random', random_state=0).fit(np.column_stack((train_x_2D, train_y)))
     labels = Km.labels_
     points = []
+    test_points = []
     for i in range(np.max(labels)):
-        points.append(np.where(labels== i)[0][:20])
-    points = np.array(points).reshape(-1)
+        points.append(np.where(labels== i)[0][:10])
+        test_points.append(np.where(labels== i)[0][10:])
+    points = np.concatenate(points).reshape(-1)
+    test_points = np.concatenate(test_points)
+
+    
     # Fit the model
     print('Fitting model')
     model = Model()
@@ -231,8 +238,8 @@ def main():
     print('Predicting on test features')
     predictions = model.make_predictions(train_x_2D[points], test_x_AREA)
     print(f'MSE {np.mean(np.square(predictions[0]- train_y[points]))}')
-    predictions = model.make_predictions(train_x_2D, test_x_AREA)
-    print(f'MSE {np.mean(np.square(predictions[0]- train_y))}')
+    predictions = model.make_predictions(train_x_2D[test_points], test_x_AREA)
+    print(f'MSE {np.mean(np.square(predictions[0]- train_y[test_points]))}')
 
     if EXTENDED_EVALUATION:
         perform_extended_evaluation(model, output_dir='.')
