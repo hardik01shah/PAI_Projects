@@ -68,7 +68,7 @@ class Model(object):
         RBF_kernel = 1 * RBF(length_scale=0.1, length_scale_bounds=[1e-2, 1e2])
         Dot_kernel = DotProduct()
         Combibed_kernal = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
-        Combibed_kernal_v2 = DotProduct() + 1*RationalQuadratic(length_scale=0.1, alpha=1e-2)
+        Combibed_kernal_v2 = (Matern() * DotProduct())*WhiteKernel()
         # self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal_v2, random_state=0).fit(train_x_2D, train_y)
         self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0).fit(train_x_2D, train_y)
         # self.gpr = GaussianProcessRegressor(kernel=RBF_kernel, random_state=0).fit(train_x_2D, train_y)
@@ -239,7 +239,7 @@ def induced_points(features, labels, num_points = 1000):
 
 
 
-def local_gp():
+def local_gp_CV():
     # Load the training dateset and test features
     train_x = np.loadtxt('train_x.csv', delimiter=',', skiprows=1)
     train_y = np.loadtxt('train_y.csv', delimiter=',', skiprows=1)
@@ -249,18 +249,18 @@ def local_gp():
     train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
 
     # Local Gaussians
-    n_gp = 15
-    train_features, test_features, train_labels, test_labels = train_test_split(train_x_2D, train_y, test_size = 0.2, random_state=0)
+    n_gp = 50
+    train_features, test_features, train_labels, test_labels = train_test_split(train_x_2D, train_y, test_size = 0.1, random_state=0)
 
     Km = KMeans(n_clusters=n_gp, init='random', random_state=0).fit(train_features)
     train_cls = Km.labels_
-    test_cls_whts = Km.transform(test_features)
+    test_cls_whts = np.power(Km.transform(test_features), -4)
 
     train_mse = 0
     test_predictions_total = np.zeros((test_cls_whts.shape[0]))
 
     for i in range(n_gp):
-        print(f'Fitting model: {i + 1}')
+        print(f'Fitting model: {i + 1}/ {n_gp}')
         
         model = Model()
         model.fitting_model(train_labels[np.where(train_cls == i)[0]], train_features[np.where(train_cls == i)[0]])
@@ -279,6 +279,49 @@ def local_gp():
     print(f'Test MSE: {test_mse}')
 
 
+def local_gp():
+    # Load the training dateset and test features
+    train_x = np.loadtxt('train_x.csv', delimiter=',', skiprows=1)
+    train_y = np.loadtxt('train_y.csv', delimiter=',', skiprows=1)
+    test_x = np.loadtxt('test_x.csv', delimiter=',', skiprows=1)
+
+    # Extract the city_area information
+    train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
+
+    # Local Gaussians
+    n_gp = 50
+    train_features, test_features, train_labels, test_labels = train_test_split(train_x_2D, train_y, test_size = 0.1, random_state=0)
+
+    test_features = test_x_2D
+
+    Km = KMeans(n_clusters=n_gp, init='random', random_state=0).fit(train_features)
+    train_cls = Km.labels_
+    test_cls_whts = np.power(Km.transform(test_features), -4)
+
+    train_mse = 0
+    test_mean_total = np.zeros((test_cls_whts.shape[0]))
+    test_std_total = np.zeros((test_cls_whts.shape[0]))
+
+    for i in range(n_gp):
+        print(f'Fitting model: {i + 1}/ {n_gp}')
+        
+        model = Model()
+        model.fitting_model(train_labels[np.where(train_cls == i)[0]], train_features[np.where(train_cls == i)[0]])
+        
+        train_predictions = model.make_predictions(train_features[np.where(train_cls == i)[0]], test_x_AREA)[0]
+        train_mse += np.sum(np.square(train_predictions- train_labels[np.where(train_cls == i)[0]]))
+
+        test_predictions_i, test_mean_i, test_std_i = model.make_predictions(test_features, test_x_AREA)
+        test_mean_total += test_mean_i*test_cls_whts[:, i]
+        test_std_total += test_std_i*test_cls_whts[:, i]
+
+    train_mse /= train_features.shape[0]
+    
+    test_mean_total /= np.sum(test_cls_whts, axis = 1)
+    test_std_total /= np.sum(test_cls_whts, axis = 1)
+
+    print(f'Train MSE:{train_mse}')
+
 # you don't have to change this function
 def main():
     # Load the training dateset and test features
@@ -291,7 +334,7 @@ def main():
 
 
     # Clustering and extracting points
-    points, test_points = cluster_points(train_x_2D, train_y)
+    points, test_points = cluster_points(train_x_2D, train_y, n_clusters=130)
 
 
     # Induced Points
@@ -319,4 +362,5 @@ def main():
 
 if __name__ == "__main__":
     local_gp()
+    # local_gp_CV()
     # main()
