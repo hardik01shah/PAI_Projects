@@ -37,11 +37,13 @@ class Model(object):
         gp_mean, gp_std = self.gpr.predict(test_x_2D, return_std=True)
         return gp_mean, gp_std
     
-    def nystorm_pred(self, test_x_2D: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray]:
+    def nystrom_pred(self, test_x_2D: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray]:
         k_test_x = self.get_RBF_kernel(test_x_2D, self.train_x_2D)
 
         gp_mean = k_test_x@self.K_hat_inv_y
         gp_std = np.diag(np.sqrt(self.RBF_OUTPUT_SCALE - (k_test_x@self.K_hat_inv@(k_test_x.T))))
+
+        # print(f"max and min of mean:{np.max(gp_mean)}, {np.min(gp_mean)}")
 
         return gp_mean, gp_std
 
@@ -61,44 +63,73 @@ class Model(object):
 
         # TODO: Use the GP posterior to form your predictions here
         gp_mean, gp_std = self.gpr_pred(test_x_2D)
-        # gp_mean, gp_std = self.nystorm_pred(test_x_2D)
+        # gp_mean, gp_std = self.nystrom_pred(test_x_2D)
 
         assert gp_mean.shape == gp_mean_init.shape
         assert gp_std.shape == gp_std_init.shape
 
         RESIDENTIAL_DEVIATION = 0.5
 
-        predictions = gp_mean
+        predictions = gp_mean.copy()
         res_indx = np.where(test_x_AREA==1.)[0]
         predictions[res_indx] = gp_mean[res_indx] + RESIDENTIAL_DEVIATION*gp_std[res_indx]
 
         return predictions, gp_mean, gp_std
     
     def clustering_and_sampling(self, train_y: np.ndarray, train_x_2D:np.ndarray):
-        NUM_CLUSTERS = 600
-        NUM_SAMPLES_PER_CLUSTER = 5
+        NUM_CLUSTERS = 3000
+        NUM_SAMPLES_PER_CLUSTER = 1
 
-        Km = KMeans(n_clusters=NUM_CLUSTERS, init='random', random_state=0).fit(
+        Km = KMeans(n_clusters=NUM_CLUSTERS, init='random', random_state=0, max_iter=600, n_init='auto').fit(
             np.column_stack((train_x_2D, train_y)))
         labels = Km.labels_
+        centers = Km.cluster_centers_
+
+        # plt.scatter(train_x_2D[:,0], train_x_2D[:,1], label='train')
+        # plt.scatter(centers[:,0], centers[:,1], label='kmeans')
+        # plt.legend()
+        # plt.show()
+        # exit()
+        datas = np.column_stack((train_x_2D, train_y))
+        orig_indx = np.arange(len(datas)).reshape(-1,1)
         points = []
         val_points = []
         for i in range(np.max(labels)):
-            points.append(np.where(labels== i)[0][:NUM_SAMPLES_PER_CLUSTER])
-            val_points.append(np.where(labels== i)[0][NUM_SAMPLES_PER_CLUSTER:])
+            indx = np.where(labels== i)[0]
+            center = centers[i]
+            
+            if NUM_SAMPLES_PER_CLUSTER < len(datas[indx]):
+                sel_indx = np.argpartition(np.linalg.norm(datas[indx] - center, axis = 1), NUM_SAMPLES_PER_CLUSTER)[:NUM_SAMPLES_PER_CLUSTER]
+                n_sel_indx = np.argpartition(np.linalg.norm(datas[indx] - center, axis = 1), NUM_SAMPLES_PER_CLUSTER)[NUM_SAMPLES_PER_CLUSTER:]
+                points.append(orig_indx[indx][sel_indx])
+                val_points.append(orig_indx[indx][n_sel_indx])
+            else:
+                points.append(indx.reshape(-1,1))
+
+            # points.append(np.where(labels== i)[0][:NUM_SAMPLES_PER_CLUSTER])
+            # val_points.append(np.where(labels== i)[0][NUM_SAMPLES_PER_CLUSTER:])
+
         points = np.concatenate(points).reshape(-1)
-        val_points = np.concatenate(val_points)
+        val_points = np.concatenate(val_points).reshape(-1)
+
+        # plt.scatter(train_x_2D[:,0], train_x_2D[:,1], label='train')
+        # plt.scatter(train_x_2D[points,0], train_x_2D[points,1], label='kmeans')
+        # plt.legend()
+        # plt.show()
+        # exit()
 
         return points, val_points
     
     def GP_regressor(self, train_y: np.ndarray, train_x_2D: np.ndarray):
-        RBF_kernel = 1.0 * RBF(length_scale=1.0, length_scale_bounds=[1e-2, 1e2])
-        Combined_kernel = ConstantKernel() * (RBF_kernel + DotProduct() + WhiteKernel())
-        gpr = GaussianProcessRegressor(kernel=Combined_kernel, random_state=0).fit(
+        RBF_kernel = 3.0 * RBF(length_scale=0.5, length_scale_bounds=[0.001, 1.])
+        # Combined_kernel = ConstantKernel() + RBF_kernel + WhiteKernel()
+        Combined_kernel = RBF_kernel + WhiteKernel()
+        gpr = GaussianProcessRegressor(kernel=Combined_kernel, random_state=0, n_restarts_optimizer=3).fit(
             train_x_2D, train_y)
 
         ll = gpr.log_marginal_likelihood()
         print(f"Log Likelihood: {ll}")
+        print(f"Kernel: {gpr.kernel_}")
 
         return gpr
     
@@ -107,28 +138,60 @@ class Model(object):
             np.arange(len(x_i)), np.arange(len(x_j)), indexing='ij')
         
         return self.RBF_OUTPUT_SCALE*np.exp(
-            np.power(
-                np.linalg.norm(x_i[indx_i] - x_j[indx_j], axis=2), 2)/(2*(self.RBF_INPUT_SCALE**2)))
+            -0.5*(np.power(
+                np.linalg.norm(x_i[indx_i] - x_j[indx_j], axis=2), 2)/(self.RBF_INPUT_SCALE**2)))
 
 
-    def nystorm_approximation(self, train_y: np.ndarray, train_x_2D: np.ndarray):
+    def nystrom_approximation(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         DIM_Q = 1000
-        self.RBF_INPUT_SCALE = 1.0
-        self.RBF_OUTPUT_SCALE = 1.0
+        self.RBF_INPUT_SCALE = 0.1
+        self.RBF_OUTPUT_SCALE = 3.0
         
-        K_nq = self.get_RBF_kernel(train_x_2D, train_x_2D[:DIM_Q, :])
-        K_q = self.get_RBF_kernel(train_x_2D[:DIM_Q, :], train_x_2D[:DIM_Q, :])
+        # a = np.random.randint(1,10,(7,2))
+        # b = np.random.randint(1,10,(3,2))
+        # c = self.get_RBF_kernel(a,b)
+        # print(f"a: {a}")
+        # print(f"b: {b}")
+        # print(f"c: {c}")
+        # self.K_hat_inv = np.linalg.inv(self.get_RBF_kernel(a, a))
+        # print(f"self.K_hat_inv: {self.K_hat_inv}")
+        # exit()
+        train_x_subset = train_x_2D[:DIM_Q, :]
+        print(f"Subset shape: {train_x_subset.shape}")
+        K_nq = self.get_RBF_kernel(train_x_2D, train_x_subset)
+        K_q = self.get_RBF_kernel(train_x_subset, train_x_subset)
         K_qn = K_nq.T
+        print(f"min: {np.min(K_q)}")
+        print(f"max: {np.max(K_q)}")
+        print(f"min: {np.min(K_nq)}")
+        print(f"max: {np.max(K_nq)}")
+        # K_hat = K_nq@np.linalg.inv(K_q)@K_qn
 
-        K_hat = K_nq@np.linalg.inv(K_q)@K_qn
+        # eval, U = np.linalg.eigh(K_q)
+        # lamda = np.diag(eval)
+        # print(f"lamda: {lamda.shape}")
+        # print(f"U: {U.shape}")
 
-        eval, U = np.linalg.eigh(K_q)
-        lamda = np.diag(eval)
-        self.K_hat_inv = K_nq@U@np.linalg.inv(lamda+U.T@K_qn@K_nq@U)@U.T@K_qn
+        SIGMA_N = 2.0
+        sigma2_i = (1/SIGMA_N**2)*np.eye(len(train_x_2D))
+        # sigma2_i = np.eye(len(train_x_2D))
+        mid_term = (1/SIGMA_N**4)*np.linalg.pinv(K_q+(1/SIGMA_N**2)*(K_qn@K_nq))
+
+        self.K_hat_inv = sigma2_i - K_nq@mid_term@K_qn
+        # self.K_hat_inv = np.linalg.inv(K_hat + np.eye(len(train_x_2D)))
+        # self.K_hat_inv = np.linalg.inv(self.get_RBF_kernel(train_x_2D, train_x_2D) + np.eye(len(train_x_2D)))
 
         self.train_x_2D = train_x_2D
         self.K_hat_inv_y = self.K_hat_inv@train_y
-    
+
+        one_samp = train_x_2D[0,:].reshape(1,-1)
+        one_ker = self.get_RBF_kernel(one_samp, train_x_2D)
+        print(f"first_ker: {one_ker.shape}")
+        print(f"first_sample: {one_samp}")
+        print(f"mu: {one_ker@self.K_hat_inv_y}")
+        print(f"gt: {train_y[0]}")
+        # exit()
+
     def gpr_kmeans(self, train_y: np.ndarray, train_x_2D: np.ndarray):
         # clustering train data using k_means
         points, val_points = self.clustering_and_sampling(train_y, train_x_2D)
@@ -155,7 +218,7 @@ class Model(object):
 
         # TODO: Fit your model here
         self.gpr_kmeans(train_y, train_x_2D)
-        # self.nystorm_approximation(train_y[:3000], train_x_2D[:3000])
+        # self.nystrom_approximation(train_y[:3000], train_x_2D[:3000])
         
 
 # You don't have to change this function
