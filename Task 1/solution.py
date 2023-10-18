@@ -1,10 +1,10 @@
 import os
 import typing
 from sklearn.gaussian_process.kernels import *
+from sklearn.cluster import KMeans
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
 from matplotlib import cm
 from sklearn.model_selection import train_test_split
 
@@ -33,8 +33,9 @@ class Model(object):
         self.rng = np.random.default_rng(seed=0)
 
         # TODO: Add custom initialization for your model here if necessary
-
-
+        self.n_gp = 50
+        self.Km = KMeans(n_clusters=self.n_gp, init='random', random_state=0)
+    
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Predict the pollution concentration for a given set of city_areas.
@@ -46,14 +47,36 @@ class Model(object):
         """
 
         # TODO: Use your GP to estimate the posterior mean and stddev for each city_area here
-        gp_mean = np.zeros(test_x_2D.shape[0], dtype=float)
-        gp_std = np.zeros(test_x_2D.shape[0], dtype=float)
+        gp_mean_init = np.zeros(test_x_2D.shape[0], dtype=float)
+        gp_std_init = np.zeros(test_x_2D.shape[0], dtype=float)
+
+        test_cls_whts = np.power(self.Km.transform(test_x_2D), -8)
+
+        gp_mean = np.zeros((test_cls_whts.shape[0]))
+        gp_std = np.zeros((test_cls_whts.shape[0]))
 
         # TODO: Use the GP posterior to form your predictions here
-        predictions, gp_std = self.gpr.predict(test_x_2D, return_std=True)
-        params = self.gpr.get_params()
-        # print(params)
-        gp_mean = predictions
+        for i in range(self.n_gp):
+            # print(f'Evaluating model: {i + 1}/ {self.n_gp}')
+            
+            test_mean_i, test_std_i = self.gpr[i].predict(test_x_2D, return_std=True)
+            gp_mean += test_mean_i*test_cls_whts[:, i]
+            gp_std += test_std_i*test_cls_whts[:, i]
+        
+
+        gp_mean /= np.sum(test_cls_whts, axis = 1)
+        gp_std /= np.sum(test_cls_whts, axis = 1)
+
+        assert gp_mean.shape == gp_mean_init.shape
+        assert gp_std.shape == gp_std_init.shape
+
+        # RESIDENTIAL_DEVIATION = 0.6 #7.75
+        RESIDENTIAL_DEVIATION = 0.6
+
+        predictions = gp_mean
+        res_indx = np.where(test_x_AREA==1.)[0]
+        predictions[res_indx] = gp_mean[res_indx] + RESIDENTIAL_DEVIATION*gp_std[res_indx]
+
         return predictions, gp_mean, gp_std
 
     def fitting_model(self, train_y: np.ndarray,train_x_2D: np.ndarray):
@@ -64,20 +87,33 @@ class Model(object):
         """
 
         # TODO: Fit your model here
-        # RBF_kernel = 30.0 * RBF(length_scale=0.5)
-        RBF_kernel = 1 * RBF(length_scale=0.1, length_scale_bounds=[1e-2, 1e2])
-        Dot_kernel = DotProduct()
+        self.gpr = []
         Combibed_kernal = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
-        Combibed_kernal_v2 = (Matern() * DotProduct())*WhiteKernel()
-        # self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal_v2, random_state=0).fit(train_x_2D, train_y)
-        self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0).fit(train_x_2D, train_y)
-        # self.gpr = GaussianProcessRegressor(kernel=RBF_kernel, random_state=0).fit(train_x_2D, train_y)
-        # self.gpr = GaussianProcessRegressor(kernel=Dot_kernel, random_state=0).fit(train_x_2D, train_y)
+        train_features, test_features, train_labels, test_labels = train_test_split(train_x_2D, train_y, test_size = 0.1, random_state=0)
 
-        ll = self.gpr.log_marginal_likelihood()
-        print(f"Log Likelihood: {ll}")
-        # print(f"Kernel params: {RBF_kernel.get_params()}")
+        # self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0).fit(train_x_2D, train_y)
+        self.Km = KMeans(n_clusters=self.n_gp, init='random', random_state=0).fit(train_features)
+        train_cls = self.Km.labels_
+
+        train_mse = 0
+        for i in range(self.n_gp):
+            # print(f'Fitting model: {i + 1}/ {self.n_gp}')
+            
+            model =  GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0)
+            model.fit( train_features[np.where(train_cls == i)[0]], train_labels[np.where(train_cls == i)[0]])
+            
+            train_predictions = model.predict(train_features[np.where(train_cls == i)[0]])
+            train_mse += np.sum(np.square(train_predictions- train_labels[np.where(train_cls == i)[0]]))
+            
+            ll = model.log_marginal_likelihood()
+            # print(f"Log Likelihood: {ll}")
+            self.gpr.append(model)
+
+        train_mse /= train_features.shape[0]
+        
+        # print(f'Train MSE:{train_mse}')
         pass
+        
 
 # You don't have to change this function
 def cost_function(ground_truth: np.ndarray, predictions: np.ndarray, AREA_idxs: np.ndarray) -> float:
@@ -196,10 +232,9 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> ty
     test_x_AREA = np.zeros((test_x.shape[0],), dtype=bool)
 
     #TODO: Extract the city_area information from the training and test features
-    train_x_2D = train_x[: ,:2]
-    train_x_AREA = train_x[: ,2]
+    train_x_2D = train_x[:,:2]
+    train_x_AREA = train_x[:,2]
 
-    
     test_x_2D = test_x[: ,:2]
     test_x_AREA = test_x[: ,2]
 
@@ -208,119 +243,6 @@ def extract_city_area_information(train_x: np.ndarray, test_x: np.ndarray) -> ty
     assert train_x_AREA.ndim == 1 and test_x_AREA.ndim == 1
 
     return train_x_2D, train_x_AREA, test_x_2D, test_x_AREA
-
-
-
-
-def cluster_points(features, labels, n_clusters = 300):
-
-    Km = KMeans(n_clusters=n_clusters, init='random', random_state=0).fit(np.column_stack((features, labels)))
-    labels = Km.labels_
-    points = []
-    test_points = []
-    for i in range(np.max(labels)):
-        points.append(np.where(labels== i)[0][:10])
-        test_points.append(np.where(labels== i)[0][10:])
-    points = np.concatenate(points).reshape(-1)
-    test_points = np.concatenate(test_points)
-
-    return points, test_points
-
-def induced_points(features, labels, num_points = 1000):
-
-    Km = KMeans(n_clusters=num_points, init='random', random_state=0).fit(np.column_stack((features, labels)))
-    labels = Km.labels_
-    points = np.array(Km.cluster_centers_)
-    features = points[:, :-1]
-    
-    labels = points[:, -1]
-    
-    return features, labels
-
-
-
-def local_gp_CV():
-    # Load the training dateset and test features
-    train_x = np.loadtxt('train_x.csv', delimiter=',', skiprows=1)
-    train_y = np.loadtxt('train_y.csv', delimiter=',', skiprows=1)
-    test_x = np.loadtxt('test_x.csv', delimiter=',', skiprows=1)
-
-    # Extract the city_area information
-    train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
-
-    # Local Gaussians
-    n_gp = 50
-    train_features, test_features, train_labels, test_labels = train_test_split(train_x_2D, train_y, test_size = 0.1, random_state=0)
-
-    Km = KMeans(n_clusters=n_gp, init='random', random_state=0).fit(train_features)
-    train_cls = Km.labels_
-    test_cls_whts = np.power(Km.transform(test_features), -8)
-
-    train_mse = 0
-    test_predictions_total = np.zeros((test_cls_whts.shape[0]))
-
-    for i in range(n_gp):
-        print(f'Fitting model: {i + 1}/ {n_gp}')
-        
-        model = Model()
-        model.fitting_model(train_labels[np.where(train_cls == i)[0]], train_features[np.where(train_cls == i)[0]])
-        
-        train_predictions = model.make_predictions(train_features[np.where(train_cls == i)[0]], test_x_AREA)[0]
-        train_mse += np.sum(np.square(train_predictions- train_labels[np.where(train_cls == i)[0]]))
-
-        test_predictions_i = model.make_predictions(test_features, test_x_AREA)[0]
-        test_predictions_total += test_predictions_i*test_cls_whts[:, i]
-
-    train_mse /= train_features.shape[0]
-    test_predictions_total /= np.sum(test_cls_whts, axis = 1)
-    test_mse = np.mean(np.square(test_predictions_total - test_labels))
-
-    print(f'Train MSE:{train_mse}')
-    print(f'Test MSE: {test_mse}')
-
-
-def local_gp():
-    # Load the training dateset and test features
-    train_x = np.loadtxt('train_x.csv', delimiter=',', skiprows=1)
-    train_y = np.loadtxt('train_y.csv', delimiter=',', skiprows=1)
-    test_x = np.loadtxt('test_x.csv', delimiter=',', skiprows=1)
-
-    # Extract the city_area information
-    train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
-
-    # Local Gaussians
-    n_gp = 50
-    train_features, test_features, train_labels, test_labels = train_test_split(train_x_2D, train_y, test_size = 0.1, random_state=0)
-
-    test_features = test_x_2D
-
-    Km = KMeans(n_clusters=n_gp, init='random', random_state=0).fit(train_features)
-    train_cls = Km.labels_
-    test_cls_whts = np.power(Km.transform(test_features), -4)
-
-    train_mse = 0
-    test_mean_total = np.zeros((test_cls_whts.shape[0]))
-    test_std_total = np.zeros((test_cls_whts.shape[0]))
-
-    for i in range(n_gp):
-        print(f'Fitting model: {i + 1}/ {n_gp}')
-        
-        model = Model()
-        model.fitting_model(train_labels[np.where(train_cls == i)[0]], train_features[np.where(train_cls == i)[0]])
-        
-        train_predictions = model.make_predictions(train_features[np.where(train_cls == i)[0]], test_x_AREA)[0]
-        train_mse += np.sum(np.square(train_predictions- train_labels[np.where(train_cls == i)[0]]))
-
-        test_predictions_i, test_mean_i, test_std_i = model.make_predictions(test_features, test_x_AREA)
-        test_mean_total += test_mean_i*test_cls_whts[:, i]
-        test_std_total += test_std_i*test_cls_whts[:, i]
-
-    train_mse /= train_features.shape[0]
-    
-    test_mean_total /= np.sum(test_cls_whts, axis = 1)
-    test_std_total /= np.sum(test_cls_whts, axis = 1)
-
-    print(f'Train MSE:{train_mse}')
 
 # you don't have to change this function
 def main():
@@ -331,36 +253,19 @@ def main():
 
     # Extract the city_area information
     train_x_2D, train_x_AREA, test_x_2D, test_x_AREA = extract_city_area_information(train_x, test_x)
-
-
-    # Clustering and extracting points
-    points, test_points = cluster_points(train_x_2D, train_y, n_clusters=130)
-
-
-    # Induced Points
-    train_features, train_labels = induced_points(train_x_2D, train_y, num_points = 4000)
-
     # Fit the model
     print('Fitting model')
     model = Model()
-    # model.fitting_model(train_labels, train_features)
-    model.fitting_model(train_y[points], train_x_2D[points])
+    model.fitting_model(train_y,train_x_2D)
 
     # Predict on the test features
-    print('Predicting on train features')
-    # predictions = model.make_predictions(train_x_2D[points], test_x_AREA)
-    predictions = model.make_predictions(train_x_2D[points], test_x_AREA)
-    print(f'MSE {np.mean(np.square(predictions[0]- train_y[points]))}')
-    
     print('Predicting on test features')
-    predictions = model.make_predictions(train_x_2D[test_points], test_x_AREA)
-    print(f'MSE {np.mean(np.square(predictions[0]- train_y[test_points]))}')
+    predictions = model.make_predictions(test_x_2D, test_x_AREA)
+    print(predictions)
 
     if EXTENDED_EVALUATION:
         perform_extended_evaluation(model, output_dir='.')
 
 
 if __name__ == "__main__":
-    # local_gp()
-    local_gp_CV()
-    # main()
+    main()
