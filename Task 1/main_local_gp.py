@@ -50,7 +50,7 @@ class Model(object):
         gp_mean_init = np.zeros(test_x_2D.shape[0], dtype=float)
         gp_std_init = np.zeros(test_x_2D.shape[0], dtype=float)
 
-        test_cls_whts = np.power(self.Km.transform(test_x_2D), -4)
+        test_cls_whts = np.power(self.Km.transform(test_x_2D), -8)
 
         gp_mean = np.zeros((test_cls_whts.shape[0]))
         gp_std = np.zeros((test_cls_whts.shape[0]))

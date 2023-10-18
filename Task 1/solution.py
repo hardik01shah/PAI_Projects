@@ -254,7 +254,7 @@ def local_gp_CV():
 
     Km = KMeans(n_clusters=n_gp, init='random', random_state=0).fit(train_features)
     train_cls = Km.labels_
-    test_cls_whts = np.power(Km.transform(test_features), -4)
+    test_cls_whts = np.power(Km.transform(test_features), -8)
 
     train_mse = 0
     test_predictions_total = np.zeros((test_cls_whts.shape[0]))
@@ -361,6 +361,6 @@ def main():
 
 
 if __name__ == "__main__":
-    local_gp()
-    # local_gp_CV()
+    # local_gp()
+    local_gp_CV()
     # main()
