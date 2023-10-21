@@ -17,6 +17,34 @@ EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluatio
 COST_W_UNDERPREDICT = 50.0
 COST_W_NORMAL = 1.0
 
+# GENERAL PARAMS
+TRAIN_VAL_SPLIT = 0.1
+PREDICTION_METHOD = 'single_gp' # one of ['single_gp', 'nystrom', 'local_gp']
+
+# SINGLE_GP
+SINGLE_GP_KERNEL = 3.0 * RBF(length_scale=0.5, length_scale_bounds=[0.001, 1.]) + WhiteKernel()
+OPTIMIZER_RESTARTS = 3
+EVAL_KERNEL = 18.1**2 * RBF(length_scale=0.0251) + WhiteKernel(noise_level=4.67) # do not optimize hyperparams while running eval to make it faster
+EVAL_MODE = True
+
+# NYSTROM APPROXIMATION
+DIM_Q = 1000
+SIGMA_N = 2.0
+RBF_INPUT_SCALE = 0.1
+RBF_OUTPUT_SCALE = 3.0
+
+# Clustering and Sampling for SingleGP and Nystrom
+NUM_CLUSTERS = 4000
+NUM_SAMPLES_PER_CLUSTER = 1
+PLOT_SELECTED_CLUSTERS = False  # plot cluster centers
+PLOT_SELECTED_SAMPLES = False  # plot selected samples
+CLUSTER_OVER_Y = False  # if labels should be considered during clustering
+
+# LOCAL GP
+NUM_GP = 50
+WEIGHTING_FACTOR = -12
+LOCAL_GP_KERNEL = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
+# LOCAL_GP_KERNEL = 3.0 * RBF(length_scale=0.5, length_scale_bounds=[0.001, 1.]) + WhiteKernel()
 
 class Model(object):
     """
@@ -36,6 +64,201 @@ class Model(object):
         self.n_gp = 50
         self.Km = KMeans(n_clusters=self.n_gp, init='random', random_state=0)
     
+    def local_gp_fitting(self, train_y: np.ndarray, train_x_2D: np.ndarray):
+        self.gpr = []
+        self.n_gp = NUM_GP
+
+        train_features, val_features, train_labels, val_labels = train_test_split(train_x_2D, train_y, test_size = TRAIN_VAL_SPLIT, random_state=0)
+
+        self.Km = KMeans(n_clusters=self.n_gp, init='random', random_state=0, n_init='auto').fit(train_features)
+        train_cls = self.Km.labels_
+
+        train_mse = 0
+        for i in range(self.n_gp):
+            print(f'Fitting model: {i + 1}/ {self.n_gp}')
+            
+            model =  GaussianProcessRegressor(kernel=LOCAL_GP_KERNEL, random_state=0, n_restarts_optimizer=1)
+            model.fit( train_features[np.where(train_cls == i)[0]], train_labels[np.where(train_cls == i)[0]])
+            
+            train_predictions = model.predict(train_features[np.where(train_cls == i)[0]])
+            train_mse += np.sum(np.square(train_predictions- train_labels[np.where(train_cls == i)[0]]))
+            
+            ll = model.log_marginal_likelihood()
+            print(f"Log Likelihood: {ll}")
+            self.gpr.append(model)
+
+        train_mse /= train_features.shape[0]
+        print(f'Train MSE:{train_mse}')
+
+        val_predictions = self.local_gp_prediction(val_features)[0]
+        val_mse = np.mean(np.square(val_predictions - val_labels))
+        print(f'Val MSE:{val_mse}')
+
+    def local_gp_prediction(self, test_x_2D: np.ndarray):
+
+        gp_mean = np.zeros((test_x_2D.shape[0]))
+        gp_std = np.zeros((test_x_2D.shape[0]))
+
+        if WEIGHTING_FACTOR != 'INF':
+            test_cls_whts = np.power(self.Km.transform(test_x_2D), WEIGHTING_FACTOR)
+            for i in range(self.n_gp):
+                print(f'Evaluating model: {i + 1}/ {self.n_gp}')
+                
+                test_mean_i, test_std_i = self.gpr[i].predict(test_x_2D, return_std=True)
+                gp_mean += test_mean_i*test_cls_whts[:, i]
+                gp_std += test_std_i*test_cls_whts[:, i]
+            gp_mean /= np.sum(test_cls_whts, axis = 1)
+            gp_std /= np.sum(test_cls_whts, axis = 1)
+        
+        else:
+            for i in range(len(test_x_2D)):
+                cur_sample = test_x_2D[i].reshape(1,-1)
+                closest = np.argmin(np.linalg.norm(cur_sample - self.Km.cluster_centers_, axis=1))
+                test_mean_i, test_std_i = self.gpr[closest].predict(cur_sample, return_std=True)
+                gp_mean[i] = test_mean_i
+                gp_std[i] = test_std_i
+        return gp_mean, gp_std
+
+    def clustering_and_sampling(self, train_y: np.ndarray, train_x_2D:np.ndarray):
+        """
+        Clustering of input data using K Means clustering.
+        Choose NUM_SAMPLES_PER_CLUSTER nearest samples for each cluster centroid.
+        """
+        if CLUSTER_OVER_Y:
+            datas = np.column_stack((train_x_2D, train_y))
+        else:
+            datas = train_x_2D
+
+        Km = KMeans(n_clusters=NUM_CLUSTERS, init='random', random_state=0, max_iter=600, n_init='auto').fit(datas)
+        labels = Km.labels_
+        centers = Km.cluster_centers_
+
+        if PLOT_SELECTED_CLUSTERS:
+            plt.scatter(train_x_2D[:,0], train_x_2D[:,1], label='train')
+            plt.scatter(centers[:,0], centers[:,1], label='kmeans')
+            plt.legend()
+            plt.show()
+
+        orig_indx = np.arange(len(datas)).reshape(-1,1)
+        points = []
+        val_points = []
+        for i in range(np.max(labels)):
+            indx = np.where(labels== i)[0]
+            center = centers[i]
+            
+            if NUM_SAMPLES_PER_CLUSTER < len(datas[indx]):
+                sel_indx = np.argpartition(np.linalg.norm(datas[indx] - center, axis = 1), NUM_SAMPLES_PER_CLUSTER)[:NUM_SAMPLES_PER_CLUSTER]
+                n_sel_indx = np.argpartition(np.linalg.norm(datas[indx] - center, axis = 1), NUM_SAMPLES_PER_CLUSTER)[NUM_SAMPLES_PER_CLUSTER:]
+                points.append(orig_indx[indx][sel_indx])
+                val_points.append(orig_indx[indx][n_sel_indx])
+            else:
+                points.append(indx.reshape(-1,1))
+
+        points = np.concatenate(points).reshape(-1)
+        val_points = np.concatenate(val_points).reshape(-1)
+
+        if PLOT_SELECTED_SAMPLES:
+            plt.scatter(train_x_2D[:,0], train_x_2D[:,1], label='train')
+            plt.scatter(train_x_2D[points,0], train_x_2D[points,1], label='selected train')
+            plt.legend()
+            plt.show()
+            exit()
+
+        return points, val_points
+
+    def single_gp_fitting(self, train_y: np.ndarray, train_x_2D: np.ndarray):
+
+        train_features, val_features, train_labels, val_labels = train_test_split(train_x_2D, train_y, test_size = TRAIN_VAL_SPLIT, random_state=0)
+        sel_indx, non_sel_indx = self.clustering_and_sampling(train_labels, train_features)
+
+        rem_train_features = train_features[non_sel_indx]
+        rem_train_labels = train_labels[non_sel_indx]
+        train_features = train_features[sel_indx]
+        train_labels = train_labels[sel_indx]
+
+        if EVAL_MODE:
+            self.gpr = GaussianProcessRegressor(
+                kernel=EVAL_KERNEL,
+                random_state=0,
+                optimizer=None).fit(train_features, train_labels)
+        else:
+            self.gpr = GaussianProcessRegressor(
+                kernel=SINGLE_GP_KERNEL,
+                random_state=0,
+                n_restarts_optimizer=OPTIMIZER_RESTARTS).fit(train_features, train_labels)
+
+        print(f"Log Likelihood: {self.gpr.log_marginal_likelihood()}")
+        print(f"Kernel Params after Hyperparameter Optimization: {self.gpr.kernel_}")
+
+        train_predictions = self.single_gp_prediction(train_features)[0]
+        train_mse = np.mean(np.square(train_predictions - train_labels))
+        print(f'Train MSE:{train_mse}')
+        
+        val_predictions = self.single_gp_prediction(val_features)[0]
+        val_mse = np.mean(np.square(val_predictions - val_labels))
+        print(f'Val MSE:{val_mse}')
+    
+    def single_gp_prediction(self, test_x_2D: np.ndarray):
+        gp_mean, gp_std = self.gpr.predict(test_x_2D, return_std=True)
+        return gp_mean, gp_std
+    
+    def get_RBF_kernel(self, x_i, x_j):
+        indx_i, indx_j = np.meshgrid(
+            np.arange(len(x_i)), np.arange(len(x_j)), indexing='ij')
+        
+        return RBF_OUTPUT_SCALE*np.exp(
+            -0.5*(np.power(
+                np.linalg.norm(x_i[indx_i] - x_j[indx_j], axis=2), 2)/(RBF_INPUT_SCALE**2)))
+
+    def nystrom_fitting(self, train_y: np.ndarray, train_x_2D: np.ndarray):
+
+        train_features, val_features, train_labels, val_labels = train_test_split(train_x_2D, train_y, test_size = TRAIN_VAL_SPLIT, random_state=0)
+        sel_indx, non_sel_indx = self.clustering_and_sampling(train_labels, train_features)
+
+        rem_train_features = train_features[non_sel_indx]
+        rem_train_labels = train_labels[non_sel_indx]
+        train_features = train_features[sel_indx]
+        train_labels = train_labels[sel_indx]
+
+        train_x_subset = train_features[:DIM_Q, :]
+        print(f"Subset shape for Nystrom Approximation: {train_x_subset.shape}")
+
+        K_nq = self.get_RBF_kernel(train_features, train_x_subset)
+        K_q = self.get_RBF_kernel(train_x_subset, train_x_subset)
+        K_qn = K_nq.T
+
+        # We don't need K_hat, but (K_hat + sigma_n^2I)^-1 in closed form predictions for GP
+        # K_hat = K_nq@np.linalg.inv(K_q)@K_qn
+        # K_hat = K_nq . K_q^-1 . K_qn
+
+        # ref: http://gpss.cc/gpss19/slides/Dai2019.pdf (slide 17)
+        # Applying the Woodbury formula:
+        # (A+UCV)^-1 = A^-1 + A^-1U(C^-1+VA^-1U)^-1VA^-1
+        # A=sigma_n^2I, U=K_nq, C=K_q^-1, V=K_qn
+
+        sigma2_i = (1/SIGMA_N**2)*np.eye(len(train_x_2D))
+        mid_term = (1/SIGMA_N**4)*np.linalg.pinv(K_q+(1/SIGMA_N**2)*(K_qn@K_nq))
+        self.K_hat_inv = sigma2_i - K_nq@mid_term@K_qn
+        
+        self.train_features = train_features
+        self.K_hat_inv_y = self.K_hat_inv@train_labels
+
+        train_predictions = self.nystrom_prediction(train_features)[0]
+        train_mse = np.mean(np.square(train_predictions - train_labels))
+        print(f'Train MSE:{train_mse}')
+        
+        val_predictions = self.nystrom_prediction(val_features)[0]
+        val_mse = np.mean(np.square(val_predictions - val_labels))
+        print(f'Val MSE:{val_mse}')
+
+    def nystrom_prediction(self, test_x_2D: np.ndarray):
+        k_test_x = self.get_RBF_kernel(test_x_2D, self.train_features)
+
+        gp_mean = k_test_x@self.K_hat_inv_y
+        gp_std = np.diag(np.sqrt(RBF_OUTPUT_SCALE - (k_test_x@self.K_hat_inv@(k_test_x.T))))
+
+        return gp_mean, gp_std
+    
     def make_predictions(self, test_x_2D: np.ndarray, test_x_AREA: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Predict the pollution concentration for a given set of city_areas.
@@ -50,30 +273,22 @@ class Model(object):
         gp_mean_init = np.zeros(test_x_2D.shape[0], dtype=float)
         gp_std_init = np.zeros(test_x_2D.shape[0], dtype=float)
 
-        test_cls_whts = np.power(self.Km.transform(test_x_2D), -8)
-
-        gp_mean = np.zeros((test_cls_whts.shape[0]))
-        gp_std = np.zeros((test_cls_whts.shape[0]))
-
         # TODO: Use the GP posterior to form your predictions here
-        for i in range(self.n_gp):
-            # print(f'Evaluating model: {i + 1}/ {self.n_gp}')
-            
-            test_mean_i, test_std_i = self.gpr[i].predict(test_x_2D, return_std=True)
-            gp_mean += test_mean_i*test_cls_whts[:, i]
-            gp_std += test_std_i*test_cls_whts[:, i]
-        
-
-        gp_mean /= np.sum(test_cls_whts, axis = 1)
-        gp_std /= np.sum(test_cls_whts, axis = 1)
+        if PREDICTION_METHOD == 'single_gp':
+            gp_mean, gp_std = self.single_gp_prediction(test_x_2D)
+        elif PREDICTION_METHOD == 'nystrom':
+            gp_mean, gp_std = self.nystrom_prediction(test_x_2D)
+        elif PREDICTION_METHOD == 'local_gp':
+            gp_mean, gp_std = self.local_gp_prediction(test_x_2D)
+        else:
+            raise ValueError(f"PREDICTION_METHOD should be in ['single_gp', 'nystrom', 'local_gp'].")
 
         assert gp_mean.shape == gp_mean_init.shape
         assert gp_std.shape == gp_std_init.shape
 
-        # RESIDENTIAL_DEVIATION = 0.6 #7.75
-        RESIDENTIAL_DEVIATION = 0.6
+        RESIDENTIAL_DEVIATION = 1.1
 
-        predictions = gp_mean
+        predictions = gp_mean.copy()
         res_indx = np.where(test_x_AREA==1.)[0]
         predictions[res_indx] = gp_mean[res_indx] + RESIDENTIAL_DEVIATION*gp_std[res_indx]
 
@@ -87,33 +302,15 @@ class Model(object):
         """
 
         # TODO: Fit your model here
-        self.gpr = []
-        Combibed_kernal = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
-        train_features, test_features, train_labels, test_labels = train_test_split(train_x_2D, train_y, test_size = 0.1, random_state=0)
+        if PREDICTION_METHOD == 'single_gp':
+            self.single_gp_fitting(train_y, train_x_2D)
+        elif PREDICTION_METHOD == 'nystrom':
+            self.nystrom_fitting(train_y, train_x_2D)
+        elif PREDICTION_METHOD == 'local_gp':
+            self.local_gp_fitting(train_y, train_x_2D)
+        else:
+            raise ValueError(f"PREDICTION_METHOD should be in ['single_gp', 'nystrom', 'local_gp'].")
 
-        # self.gpr = GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0).fit(train_x_2D, train_y)
-        self.Km = KMeans(n_clusters=self.n_gp, init='random', random_state=0).fit(train_features)
-        train_cls = self.Km.labels_
-
-        train_mse = 0
-        for i in range(self.n_gp):
-            # print(f'Fitting model: {i + 1}/ {self.n_gp}')
-            
-            model =  GaussianProcessRegressor(kernel=Combibed_kernal, random_state=0)
-            model.fit( train_features[np.where(train_cls == i)[0]], train_labels[np.where(train_cls == i)[0]])
-            
-            train_predictions = model.predict(train_features[np.where(train_cls == i)[0]])
-            train_mse += np.sum(np.square(train_predictions- train_labels[np.where(train_cls == i)[0]]))
-            
-            ll = model.log_marginal_likelihood()
-            # print(f"Log Likelihood: {ll}")
-            self.gpr.append(model)
-
-        train_mse /= train_features.shape[0]
-        
-        # print(f'Train MSE:{train_mse}')
-        pass
-        
 
 # You don't have to change this function
 def cost_function(ground_truth: np.ndarray, predictions: np.ndarray, AREA_idxs: np.ndarray) -> float:
