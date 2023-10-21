@@ -19,7 +19,7 @@ COST_W_NORMAL = 1.0
 
 # GENERAL PARAMS
 TRAIN_VAL_SPLIT = 0.1
-PREDICTION_METHOD = 'nystrom' # one of ['single_gp', 'nystrom', 'local_gp']
+PREDICTION_METHOD = 'local_gp' # one of ['single_gp', 'nystrom', 'local_gp']
 
 # SINGLE_GP
 SINGLE_GP_KERNEL = 3.0 * RBF(length_scale=0.5, length_scale_bounds=[0.001, 1.]) + WhiteKernel()
@@ -43,8 +43,12 @@ CLUSTER_OVER_Y = False  # if labels should be considered during clustering
 # LOCAL GP
 NUM_GP = 50
 WEIGHTING_FACTOR = -12
-LOCAL_GP_KERNEL = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
-# LOCAL_GP_KERNEL = 3.0 * RBF(length_scale=0.5, length_scale_bounds=[0.001, 1.]) + WhiteKernel()
+LOCAL_GP_OPTIMIZER_RESTARTS = 3
+# LOCAL_GP_KERNEL = ConstantKernel() * (RBF(length_scale=1., length_scale_bounds=[1e-2, 1e2]) + DotProduct() + WhiteKernel())
+LOCAL_GP_KERNEL = 3.0 * RBF(length_scale=0.5, length_scale_bounds=[0.001, 100.]) + WhiteKernel()
+
+# Asymmetric cost params
+RESIDENTIAL_DEVIATION = 1.1
 
 class Model(object):
     """
@@ -77,7 +81,7 @@ class Model(object):
         for i in range(self.n_gp):
             print(f'Fitting model: {i + 1}/ {self.n_gp}')
             
-            model =  GaussianProcessRegressor(kernel=LOCAL_GP_KERNEL, random_state=0, n_restarts_optimizer=1)
+            model =  GaussianProcessRegressor(kernel=LOCAL_GP_KERNEL, random_state=0, n_restarts_optimizer=LOCAL_GP_OPTIMIZER_RESTARTS)
             model.fit( train_features[np.where(train_cls == i)[0]], train_labels[np.where(train_cls == i)[0]])
             
             train_predictions = model.predict(train_features[np.where(train_cls == i)[0]])
@@ -288,8 +292,6 @@ class Model(object):
 
         assert gp_mean.shape == gp_mean_init.shape
         assert gp_std.shape == gp_std_init.shape
-
-        RESIDENTIAL_DEVIATION = 1.1
 
         predictions = gp_mean.copy()
         res_indx = np.where(test_x_AREA==1.)[0]
