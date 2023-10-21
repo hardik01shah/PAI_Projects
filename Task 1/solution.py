@@ -19,7 +19,7 @@ COST_W_NORMAL = 1.0
 
 # GENERAL PARAMS
 TRAIN_VAL_SPLIT = 0.1
-PREDICTION_METHOD = 'single_gp' # one of ['single_gp', 'nystrom', 'local_gp']
+PREDICTION_METHOD = 'nystrom' # one of ['single_gp', 'nystrom', 'local_gp']
 
 # SINGLE_GP
 SINGLE_GP_KERNEL = 3.0 * RBF(length_scale=0.5, length_scale_bounds=[0.001, 1.]) + WhiteKernel()
@@ -28,13 +28,13 @@ EVAL_KERNEL = 18.1**2 * RBF(length_scale=0.0251) + WhiteKernel(noise_level=4.67)
 EVAL_MODE = True
 
 # NYSTROM APPROXIMATION
-DIM_Q = 1000
-SIGMA_N = 2.0
-RBF_INPUT_SCALE = 0.1
-RBF_OUTPUT_SCALE = 3.0
+DIM_Q = 3000
+SIGMA_N = np.sqrt(4.67)
+RBF_INPUT_SCALE = 0.025
+RBF_OUTPUT_SCALE = 3.0**2
 
 # Clustering and Sampling for SingleGP and Nystrom
-NUM_CLUSTERS = 4000
+NUM_CLUSTERS = 7000
 NUM_SAMPLES_PER_CLUSTER = 1
 PLOT_SELECTED_CLUSTERS = False  # plot cluster centers
 PLOT_SELECTED_SAMPLES = False  # plot selected samples
@@ -129,6 +129,7 @@ class Model(object):
         else:
             datas = train_x_2D
 
+        print(f"Clustering input data using K-Means.")
         Km = KMeans(n_clusters=NUM_CLUSTERS, init='random', random_state=0, max_iter=600, n_init='auto').fit(datas)
         labels = Km.labels_
         centers = Km.cluster_centers_
@@ -220,12 +221,13 @@ class Model(object):
         train_features = train_features[sel_indx]
         train_labels = train_labels[sel_indx]
 
-        train_x_subset = train_features[:DIM_Q, :]
+        train_x_subset = train_features[np.random.randint(0,len(train_features),DIM_Q), :]
         print(f"Subset shape for Nystrom Approximation: {train_x_subset.shape}")
 
         K_nq = self.get_RBF_kernel(train_features, train_x_subset)
         K_q = self.get_RBF_kernel(train_x_subset, train_x_subset)
         K_qn = K_nq.T
+        print(f"Estimating Kernel matrix")
 
         # We don't need K_hat, but (K_hat + sigma_n^2I)^-1 in closed form predictions for GP
         # K_hat = K_nq@np.linalg.inv(K_q)@K_qn
@@ -236,10 +238,11 @@ class Model(object):
         # (A+UCV)^-1 = A^-1 + A^-1U(C^-1+VA^-1U)^-1VA^-1
         # A=sigma_n^2I, U=K_nq, C=K_q^-1, V=K_qn
 
-        sigma2_i = (1/SIGMA_N**2)*np.eye(len(train_x_2D))
-        mid_term = (1/SIGMA_N**4)*np.linalg.pinv(K_q+(1/SIGMA_N**2)*(K_qn@K_nq))
+        sigma2_i = (1/SIGMA_N**2)*np.eye(len(train_features))
+        mid_term = (1/SIGMA_N**4)*np.linalg.pinv(K_q+((1/SIGMA_N**2)*(K_qn@K_nq)))
         self.K_hat_inv = sigma2_i - K_nq@mid_term@K_qn
-        
+        print(f"Finished estimating (K_hat+sigma_n^2)^-1")
+
         self.train_features = train_features
         self.K_hat_inv_y = self.K_hat_inv@train_labels
 
@@ -255,7 +258,7 @@ class Model(object):
         k_test_x = self.get_RBF_kernel(test_x_2D, self.train_features)
 
         gp_mean = k_test_x@self.K_hat_inv_y
-        gp_std = np.diag(np.sqrt(RBF_OUTPUT_SCALE - (k_test_x@self.K_hat_inv@(k_test_x.T))))
+        gp_std = np.sqrt(np.diag(RBF_OUTPUT_SCALE - (k_test_x@self.K_hat_inv@(k_test_x.T))))
 
         return gp_mean, gp_std
     
