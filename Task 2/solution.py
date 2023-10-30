@@ -31,13 +31,13 @@ Note that MAP inference can take a long time.
 
 
 def main():
-    raise RuntimeError(
-        "This main() method is for illustrative purposes only"
-        " and will NEVER be called when running your solution to generate your submission file!\n"
-        "The checker always directly interacts with your SWAGInference class and evaluate method.\n"
-        "You can remove this exception for local testing, but be aware that any changes to the main() method"
-        " are ignored when generating your submission file."
-    )
+    # raise RuntimeError(
+    #     "This main() method is for illustrative purposes only"
+    #     " and will NEVER be called when running your solution to generate your submission file!\n"
+    #     "The checker always directly interacts with your SWAGInference class and evaluate method.\n"
+    #     "You can remove this exception for local testing, but be aware that any changes to the main() method"
+    #     " are ignored when generating your submission file."
+    # )
 
     data_dir = pathlib.Path.cwd()
     model_dir = pathlib.Path.cwd()
@@ -113,7 +113,8 @@ class SWAGInference(object):
         model_dir: pathlib.Path,
         # TODO(1): change inference_mode to InferenceMode.SWAG_DIAGONAL
         # TODO(2): change inference_mode to InferenceMode.SWAG_FULL
-        inference_mode: InferenceMode = InferenceMode.MAP,
+        # inference_mode: InferenceMode = InferenceMode.MAP,
+        inference_mode: InferenceMode = InferenceMode.SWAG_DIAGONAL,
         # TODO(2): optionally add/tweak hyperparameters
         swag_epochs: int = 30,
         swag_learning_rate: float = 0.045,
@@ -153,6 +154,8 @@ class SWAGInference(object):
         #  as a dictionary that maps from weight name to values.
         #  Hint: you never need to consider the full vector of weights,
         #  but can always act on per-layer weights (in the format that _create_weight_copy() returns)
+        self.swag_model = self._create_weight_copy()
+        self.swag_model_squared = self._create_weight_copy()
 
         # Full SWAG
         # TODO(2): create attributes for SWAG-diagonal
@@ -173,7 +176,15 @@ class SWAGInference(object):
         # SWAG-diagonal
         for name, param in current_params.items():
             # TODO(1): update SWAG-diagonal attributes for weight `name` using `current_params` and `param`
-            raise NotImplementedError("Update SWAG-diagonal statistics")
+            # raise NotImplementedError("Update SWAG-diagonal statistics")
+            alpha = 1.0 / (self.swag_n + 1)
+            cur_theta = self.swag_model[name]
+            new_theta = torch.mul(cur_theta, (1.0 - alpha)) + torch.mul(param, alpha)
+            self.swag_model[name] = new_theta
+            
+            cur_theta_sq = self.swag_model_squared[name]
+            new_theta_sq = torch.mul(cur_theta_sq, (1.0 - alpha)) + torch.mul(torch.square(param), alpha)
+            self.swag_model_squared[name] = new_theta_sq
 
         # Full SWAG
         if self.inference_mode == InferenceMode.SWAG_FULL:
@@ -209,7 +220,8 @@ class SWAGInference(object):
         )
 
         # TODO(1): Perform initialization for SWAG fitting
-        raise NotImplementedError("Initialize SWAG fitting")
+        # raise NotImplementedError("Initialize SWAG fitting")
+        self.swag_n = 0
 
         self.network.train()
         with tqdm.trange(self.swag_epochs, desc="Running gradient descent for SWA") as pbar:
@@ -241,7 +253,10 @@ class SWAGInference(object):
                     pbar.set_postfix(pbar_dict)
 
                 # TODO(1): Implement periodic SWAG updates using the attributes defined in __init__
-                raise NotImplementedError("Periodically update SWAG statistics")
+                # raise NotImplementedError("Periodically update SWAG statistics")
+                if (epoch + 1) % self.swag_update_freq == 0:
+                    self.update_swag()
+                    self.swag_n+=1
 
     def calibrate(self, validation_data: torch.utils.data.Dataset) -> None:
         """
@@ -284,11 +299,13 @@ class SWAGInference(object):
         per_model_sample_predictions = []
         for _ in tqdm.trange(self.bma_samples, desc="Performing Bayesian model averaging"):
             # TODO(1): Sample new parameters for self.network from the SWAG approximate posterior
-            raise NotImplementedError("Sample network parameters")
+            # raise NotImplementedError("Sample network parameters")
+            self.sample_parameters()
 
             # TODO(1): Perform inference for all samples in `loader` using current model sample,
             #  and add the predictions to per_model_sample_predictions
-            raise NotImplementedError("Perform inference using current model")
+            # raise NotImplementedError("Perform inference using current model")
+            per_model_sample_predictions.append(self.predict_probabilities_map(loader))
 
         assert len(per_model_sample_predictions) == self.bma_samples
         assert all(
@@ -299,8 +316,8 @@ class SWAGInference(object):
         )
 
         # TODO(1): Average predictions from different model samples into bma_probabilities
-        raise NotImplementedError("Aggregate predictions from model samples")
-        bma_probabilities = ...
+        # raise NotImplementedError("Aggregate predictions from model samples")
+        bma_probabilities = torch.mean(torch.stack(per_model_sample_predictions), dim=0)
 
         assert bma_probabilities.dim() == 2 and bma_probabilities.size(1) == 6  # N x C
         return bma_probabilities
@@ -317,9 +334,9 @@ class SWAGInference(object):
             # SWAG-diagonal part
             z_1 = torch.randn(param.size())
             # TODO(1): Sample parameter values for SWAG-diagonal
-            raise NotImplementedError("Sample parameter for SWAG-diagonal")
-            current_mean = ...
-            current_std = ...
+            # raise NotImplementedError("Sample parameter for SWAG-diagonal")
+            current_mean = self.swag_model[name]
+            current_std = self.swag_model_squared[name] - torch.square(current_mean)
             assert current_mean.size() == param.size() and current_std.size() == param.size()
 
             # Diagonal part
@@ -336,7 +353,8 @@ class SWAGInference(object):
 
         # TODO(1): Don't forget to update batch normalization statistics using self._update_batchnorm()
         #  in the appropriate place!
-        raise NotImplementedError("Update batch normalization statistics for newly sampled network")
+        # raise NotImplementedError("Update batch normalization statistics for newly sampled network")
+        self._update_batchnorm()
 
     def predict_labels(self, predicted_probabilities: torch.Tensor) -> torch.Tensor:
         """
