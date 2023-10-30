@@ -1,5 +1,6 @@
 Task 1/venv/*
 Task 2/venv/*
+Task 2/__pycache__/*
 
 Task 2/test_ys.bytes
 Task 2/test_xs.npz
