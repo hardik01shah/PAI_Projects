@@ -1,2 +1,9 @@
 Task 1/venv/*
 Task_2/venv/*
+
+Task 2/test_ys.bytes
+Task 2/test_xs.npz
+Task 2/train_xs.npz
+Task 2/train_ys.npz
+Task 2/val_xs.npz
+Task 2/val_ys.npz
