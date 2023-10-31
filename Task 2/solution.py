@@ -114,13 +114,16 @@ class SWAGInference(object):
         # TODO(1): change inference_mode to InferenceMode.SWAG_DIAGONAL
         # TODO(2): change inference_mode to InferenceMode.SWAG_FULL
         # inference_mode: InferenceMode = InferenceMode.MAP,
-        inference_mode: InferenceMode = InferenceMode.SWAG_DIAGONAL,
+        # inference_mode: InferenceMode = InferenceMode.SWAG_DIAGONAL,
+        inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
         # TODO(2): optionally add/tweak hyperparameters
         swag_epochs: int = 30,
+        # swag_epochs: int = 3,
         swag_learning_rate: float = 0.045,
         swag_update_freq: int = 1,
         deviation_matrix_max_rank: int = 15,
         bma_samples: int = 30,
+        # bma_samples: int = 3,
     ):
         """
         :param train_xs: Training images (for storage only)
@@ -161,10 +164,7 @@ class SWAGInference(object):
         # TODO(2): create attributes for SWAG-diagonal
         #  Hint: check collections.deque
         self.d_hat = dict()
-        # for name, param in self.network.named_parameters():
-        #     print(param.size())
-        # exit()
-
+        # self.d_hat = self._intialize_d_hat()
 
         # Calibration, prediction, and other attributes
         # TODO(2): create additional attributes, e.g., for calibration
@@ -201,6 +201,14 @@ class SWAGInference(object):
                 if len(self.d_hat[name])==self.deviation_matrix_max_rank:
                     self.d_hat[name].popleft()
                 self.d_hat[name].append(param - self.swag_model[name])
+                # cov_mat_sqrt = self.d_hat[name]
+                # new_col = (param - self.swag_model[name]).view(-1, 1)
+                # cov_mat_sqrt = torch.cat((cov_mat_sqrt, new_col.view(-1, 1).t()), dim=0)
+
+                # # remove first column if we have stored too many models
+                # if (self.swag_n + 1) > self.deviation_matrix_max_rank:
+                #     cov_mat_sqrt = cov_mat_sqrt[1:, :]
+                # self.d_hat[name] = cov_mat_sqrt
 
     def fit_swag(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -359,12 +367,18 @@ class SWAGInference(object):
                 # raise NotImplementedError("Sample parameter for full SWAG")
                 diag_var = 0.5*(self.swag_model_squared[name] - torch.square(current_mean))
                 D_hat = torch.zeros(param.nelement())
-                while len(self.d_hat[name])>0:
-                    torch.column_stack((D_hat, torch.flatten(self.d_hat[name].popleft())))
-                D_hat = D_hat[1,:]
+                for col in self.d_hat[name]:
+                    D_hat = torch.column_stack((D_hat, torch.flatten(col.view(-1,1))))
+                D_hat = D_hat[:,1:]
 
-                low_rank_var = (0.5*(1/(self.deviation_matrix_max_rank-1)))*torch.reshape(D_hat@D_hat.T, param.size())
-                sampled_param = current_mean + z_1*torch.sqrt(diag_var+low_rank_var)
+                z_2 = torch.randn((D_hat.size(1), 1))
+                low_rank_var = ((0.5*(1/(self.deviation_matrix_max_rank-1)))**0.5)*(D_hat.matmul(z_2).view_as(current_mean))
+                # cov_mat_sqrt = self.d_hat[name]
+                # eps = cov_mat_sqrt.new_empty((cov_mat_sqrt.size(0), 1)).normal_()
+                # cov_sample = (
+                #     0.5 / ((self.deviation_matrix_max_rank - 1) ** 0.5)
+                # ) * cov_mat_sqrt.t().matmul(eps).view_as(mean)
+                sampled_param = current_mean + z_1*torch.sqrt(diag_var) + low_rank_var
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
@@ -404,6 +418,13 @@ class SWAGInference(object):
         """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
         return {
             name: torch.zeros_like(param, requires_grad=False)
+            for name, param in self.network.named_parameters()
+        }
+    
+    def _intialize_d_hat(self) -> typing.Dict[str, torch.Tensor]:
+        """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
+        return {
+            name: param.new_empty((0, param.numel()), requires_grad=False,).zero_()
             for name, param in self.network.named_parameters()
         }
 
