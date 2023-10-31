@@ -160,6 +160,11 @@ class SWAGInference(object):
         # Full SWAG
         # TODO(2): create attributes for SWAG-diagonal
         #  Hint: check collections.deque
+        self.d_hat = dict()
+        # for name, param in self.network.named_parameters():
+        #     print(param.size())
+        # exit()
+
 
         # Calibration, prediction, and other attributes
         # TODO(2): create additional attributes, e.g., for calibration
@@ -189,7 +194,13 @@ class SWAGInference(object):
         # Full SWAG
         if self.inference_mode == InferenceMode.SWAG_FULL:
             # TODO(2): update full SWAG attributes for weight `name` using `current_params` and `param`
-            raise NotImplementedError("Update full SWAG statistics")
+            # raise NotImplementedError("Update full SWAG statistics")
+            for name, param in current_params.items():
+                if name not in self.d_hat:
+                    self.d_hat[name] = collections.deque()
+                if len(self.d_hat[name])==self.deviation_matrix_max_rank:
+                    self.d_hat[name].popleft()
+                self.d_hat[name].append(param - self.swag_model[name])
 
     def fit_swag(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -345,8 +356,15 @@ class SWAGInference(object):
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 # TODO(2): Sample parameter values for full SWAG
-                raise NotImplementedError("Sample parameter for full SWAG")
-                sampled_param += ...
+                # raise NotImplementedError("Sample parameter for full SWAG")
+                diag_var = 0.5*(self.swag_model_squared[name] - torch.square(current_mean))
+                D_hat = torch.zeros(param.nelement())
+                while len(self.d_hat[name])>0:
+                    torch.column_stack((D_hat, torch.flatten(self.d_hat[name].popleft())))
+                D_hat = D_hat[1,:]
+
+                low_rank_var = (0.5*(1/(self.deviation_matrix_max_rank-1)))*torch.reshape(D_hat@D_hat.T, param.size())
+                sampled_param = current_mean + z_1*torch.sqrt(diag_var+low_rank_var)
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
