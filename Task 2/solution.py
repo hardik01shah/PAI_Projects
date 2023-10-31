@@ -336,7 +336,7 @@ class SWAGInference(object):
             # TODO(1): Sample parameter values for SWAG-diagonal
             # raise NotImplementedError("Sample parameter for SWAG-diagonal")
             current_mean = self.swag_model[name]
-            current_std = self.swag_model_squared[name] - torch.square(current_mean)
+            current_std = torch.sqrt(self.swag_model_squared[name] - torch.square(current_mean))
             assert current_mean.size() == param.size() and current_std.size() == param.size()
 
             # Diagonal part
