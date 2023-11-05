@@ -15,6 +15,13 @@ from matplotlib import pyplot as plt
 
 from util import draw_reliability_diagram, cost_function, setup_seeds, calc_calibration_curve
 
+
+
+LR_DECAY_RATE = 0.1 # Linear decay rate
+LR_CYCLE_LENGTH = 10 # LR reset after n epochs
+LR_MODE = 'constant' # 'constant', 'cycling'
+
+
 EXTENDED_EVALUATION = False
 """
 Set `EXTENDED_EVALUATION` to `True` in order to generate additional plots on validation data.
@@ -236,6 +243,9 @@ class SWAGInference(object):
             optimizer,
             epochs=self.swag_epochs,
             steps_per_epoch=len(loader),
+            init_lr = self.swag_learning_rate,
+            lr_decay_rate = LR_DECAY_RATE,
+            lr_cycle_length = LR_CYCLE_LENGTH
         )
 
         # TODO(1): Perform initialization for SWAG fitting
@@ -633,7 +643,17 @@ class SWAGScheduler(torch.optim.lr_scheduler.LRScheduler):
         This method should return a single float: the new learning rate.
         """
         # TODO(2): Implement a custom schedule if desired
-        return old_lr
+
+        if LR_MODE == 'constant':
+            new_lr = old_lr
+
+        elif LR_MODE == 'cyclic':
+           new_lr = self.init_lr*(1-self.lr_decay_rate*(current_epoch % self.lr_cycle_length))
+
+        else:
+            raise NotImplementedError(f'LR_MODE {LR_MODE} not implemented')
+
+        return new_lr
 
     # TODO(2): Add and store additional arguments if you decide to implement a custom scheduler
     def __init__(
@@ -641,9 +661,15 @@ class SWAGScheduler(torch.optim.lr_scheduler.LRScheduler):
         optimizer: torch.optim.Optimizer,
         epochs: int,
         steps_per_epoch: int,
+        init_lr: float,
+        lr_decay_rate: float,
+        lr_cycle_length: int,
     ):
         self.epochs = epochs
         self.steps_per_epoch = steps_per_epoch
+        self.init_lr = init_lr
+        self.lr_decay_rate = lr_decay_rate
+        self.lr_cycle_length = lr_cycle_length
         super().__init__(optimizer, last_epoch=-1, verbose=False)
 
     def get_lr(self):
