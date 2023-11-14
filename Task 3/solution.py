@@ -2,11 +2,22 @@
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 # import additional ...
+from sklearn.gaussian_process.kernels import *
+from sklearn.gaussian_process import GaussianProcessRegressor
 
 
 # global variables
 DOMAIN = np.array([[0, 10]])  # restrict \theta in [0, 10]
 SAFETY_THRESHOLD = 4  # threshold, upper bound of SA
+
+
+# Added Paramters
+KERNEL_F = 1.0 * Matern(length_scale=1.0, nu=2.5)
+RANDOM_STATE_F = 0
+KERNEL_V = 1.0 * Matern(length_scale=1.0, nu=2.5) + DotProduct()
+RANDOM_STATE_V = 0
+SEARCH_GRANULARITY = 1e3
+ACQUISITION_PENATLY_SCALE = 1
 
 
 # TODO: implement a self-contained solution in the BO_algo class.
@@ -15,7 +26,34 @@ class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration."""
         # TODO: Define all relevant class members for your BO algorithm here.
+
+        self.f_approx = GaussianProcessRegressor(kernel=KERNEL_F, random_state= RANDOM_STATE_F)
+        self.v_approx = GaussianProcessRegressor(kernel=KERNEL_V, random_state= RANDOM_STATE_V)
+        self.points = []
+        self.f_obs = []
+        self.v_obs = []
+
         pass
+
+
+    # Added Function
+    def get_points(self):
+        # returns point as which v and f will be evaluated 
+        x = np.linspace(start = DOMAIN[0][0], end = DOMAIN[0][1], num = SEARCH_GRANULARITY)
+
+        return x
+    
+
+    # Added Function
+    def train_fv(self):
+        # returns point as which v and f will be evaluated 
+
+        # print(np.array(self.points).shape)
+        self.f_approx.fit(X = np.array(self.points).reshape(-1, 1), y = np.array(self.f_obs))
+        self.v_approx.fit(X = np.array(self.points).reshape(-1, 1), y = np.array(self.v_obs))
+
+        return
+
 
     def next_recommendation(self):
         """
@@ -31,7 +69,7 @@ class BO_algo():
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
 
-        raise NotImplementedError
+        return np.array([self.optimize_acquisition_function()]).reshape(1, -1)
 
     def optimize_acquisition_function(self):
         """Optimizes the acquisition function defined below (DO NOT MODIFY).
@@ -79,7 +117,13 @@ class BO_algo():
         """
         x = np.atleast_2d(x)
         # TODO: Implement the acquisition function you want to optimize.
-        raise NotImplementedError
+
+        f_pred = self.f_approx.predict(X = x)
+        v_pred = self.v_approx.predict(X = x)
+
+        score = f_pred - ACQUISITION_PENATLY_SCALE*(1/( 1 + np.exp(-v_pred)))
+        
+        return score
 
     def add_data_point(self, x: float, f: float, v: float):
         """
@@ -95,7 +139,16 @@ class BO_algo():
             SA constraint func
         """
         # TODO: Add the observed data {x, f, v} to your model.
-        raise NotImplementedError
+        x = np.array([x]).reshape(DOMAIN.shape[0])
+        self.points.append(x)
+        self.f_obs.append(f)
+        self.v_obs.append(v)
+
+        # print(self.points)
+        # print(self.f_obs)
+        # print(self.v_obs)
+        self.train_fv()
+        return
 
     def get_solution(self):
         """
@@ -107,7 +160,11 @@ class BO_algo():
             the optimal solution of the problem
         """
         # TODO: Return your predicted safe optimum of f.
-        raise NotImplementedError
+        vals = np.array(self.f_obs)
+        constraints = np.array(self.v_obs) < SAFETY_THRESHOLD
+        argmax_point = np.argmax(vals*constraints)
+
+        return self.points[argmax_point]
 
     def plot(self, plot_recommendation: bool = True):
         """Plot objective and constraint posterior for debugging (OPTIONAL).
@@ -175,8 +232,8 @@ def main():
             f"shape (1, {DOMAIN.shape[0]})"
 
         # Obtain objective and constraint observation
-        obj_val = f(x) + np.randn()
-        cost_val = v(x) + np.randn()
+        obj_val = f(x) + np.random.randn()   # NOTE THERE WAS NO RANDOM, possible template error
+        cost_val = v(x) + np.random.randn()   # NOTE THERE WAS NO RANDOM, possible template error
         agent.add_data_point(x, obj_val, cost_val)
 
     # Validate solution
