@@ -118,10 +118,10 @@ class BO_algo():
         x = np.atleast_2d(x)
         # TODO: Implement the acquisition function you want to optimize.
 
-        f_pred = self.f_approx.predict(X = x)
+        f_pred, f_std = self.f_approx.predict(X = x, return_std = True)
         v_pred = self.v_approx.predict(X = x)
 
-        score = f_pred - ACQUISITION_PENATLY_SCALE*(1/( 1 + np.exp(-v_pred)))
+        score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*(1/( 1 + np.exp(-v_pred)))
         
         return score
 
