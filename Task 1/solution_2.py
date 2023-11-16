@@ -128,7 +128,7 @@ class SWAGInference(object):
         # swag_epochs: int = 3,
         swag_learning_rate: float = 0.045,
         swag_update_freq: int = 1,
-        deviation_matrix_max_rank: int = 10,
+        deviation_matrix_max_rank: int = 15,
         bma_samples: int = 30,
         # bma_samples: int = 3,
     ):
@@ -175,8 +175,7 @@ class SWAGInference(object):
 
         # Calibration, prediction, and other attributes
         # TODO(2): create additional attributes, e.g., for calibration
-        self._prediction_threshold = None  # this is an example, feel free to be creative
-        self.temperature = 1.0
+        self._prediction_threshold = np.zeros(6)  # this is an example, feel free to be creative
 
     def update_swag(self) -> None:
         """
@@ -252,7 +251,6 @@ class SWAGInference(object):
         # TODO(1): Perform initialization for SWAG fitting
         # raise NotImplementedError("Initialize SWAG fitting")
         self.swag_n = 0
-        self.swag_start = 0
 
         self.network.train()
         with tqdm.trange(self.swag_epochs, desc="Running gradient descent for SWA") as pbar:
@@ -285,8 +283,7 @@ class SWAGInference(object):
 
                 # TODO(1): Implement periodic SWAG updates using the attributes defined in __init__
                 # raise NotImplementedError("Periodically update SWAG statistics")
-                # if (epoch + 1) % self.swag_update_freq == 0:
-                if (epoch + 1) >= self.swag_start and (epoch + 1 - self.swag_start) % self.swag_update_freq == 0:
+                if (epoch + 1) % self.swag_update_freq == 0:
                     self.update_swag()
                     self.swag_n+=1
 
@@ -298,13 +295,17 @@ class SWAGInference(object):
         """
         if self.inference_mode == InferenceMode.MAP:
             # In MAP mode, simply predict argmax and do nothing else
-            self._prediction_threshold = 0.0
+            self._prediction_threshold = np.zeros(6)
             return
+
+        # Binning Parameters
+        num_bins = 20
+        bin_edges = np.linspace(0, 1, num_bins + 1)  # Define bin edges (0 to 1)
+        bin_counts = np.zeros(num_bins)  # Initialize counts for each bin    
 
         # TODO(1): pick a prediction threshold, either constant or adaptive.
         #  The provided value should suffice to pass the easy baseline.
-        self._prediction_threshold = 2.0 / 3.0
-        # self._prediction_threshold = 0.75
+        self._prediction_threshold = np.ones(6) * 2.0 / 3.0
 
         # TODO(2): perform additional calibration if desired.
         #  Feel free to remove or change the prediction threshold.
@@ -314,62 +315,47 @@ class SWAGInference(object):
         assert val_is_snow.size() == (140,)
         assert val_is_cloud.size() == (140,)
 
-        with torch.random.fork_rng():
-            val_logits = self.get_logits_swag(val_xs)
-            self.temperature = set_temperature(val_logits[val_ys!=-1], val_ys[val_ys!=-1])
-
-            # val_probabilities = self.predict_probabilities(val_xs)
-            # val_probabilities = torch.max(val_probabilities, dim=1)[0]
-            # print(val_probabilities[val_ys==-1])
-            # self._prediction_threshold = (torch.mean(val_probabilities[val_ys==-1])+torch.std(val_probabilities[val_ys==-1])).data
-            # print('Prediction Threshold: ', self._prediction_threshold)
-
-    def get_logits_swag(self, xs: torch.Tensor) -> torch.Tensor:
-        """
-        Perform Bayesian model averaging using your SWAG statistics and get logits 
-        for all samples in the loader.
-        Outputs should be a Nx6 tensor, where N is the number of samples in loader,
-        and all rows of the output should sum to 1.
-        That is, output row i column j should be your predicted p(y=j | x_i).
-        """
-
-        self.network = self.network.eval()
-
-        loader = torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(xs),
-            batch_size=32,
-            shuffle=False,
-            num_workers=0,
-            drop_last=False,
-        )
-
         with torch.no_grad():
-            self.network.eval()
+            val_predictions = self.predict_probabilities(val_xs)
 
-            per_model_sample_logits = []
-            for _ in tqdm.trange(self.bma_samples, desc="Performing Bayesian model averaging for val logits"):
-                self.sample_parameters()
+        print(val_predictions.size())    
+        
+        #for i in range(len(val_ys)):
 
-                predictions = []
-                for (batch_xs,) in loader:
-                    predictions.append(self.network(batch_xs))
+            #bin_counts = np.zeros(num_bins)
 
-                predictions = torch.cat(predictions)
-                per_model_sample_logits.append(predictions)
+            #if val_ys[i] == -1:
+                #continue  
+            
+            # Determine which bin the prediction falls into
+            #bin_index = int((val_predictions[i] - 0) * num_bins)
+            #if bin_index == num_bins:
+                #bin_index = num_bins - 1  # Adjust for the last bin
+            
+            # Increment the count for the corresponding bin
+            #bin_counts[bin_index] += 1
 
-            assert len(per_model_sample_logits) == self.bma_samples
-            assert all(
-                isinstance(model_sample_logits, torch.Tensor)
-                and model_sample_logits.dim() == 2  # N x C
-                and model_sample_logits.size(1) == 6
-                for model_sample_logits in per_model_sample_logits
-            )
+        for j in range(val_predictions.shape[1]):
+            bin_counts = np.zeros(num_bins)
 
-            bma_logits = torch.mean(torch.stack(per_model_sample_logits), dim=0)
+            for i in range(val_predictions.shape[0]):
 
-            assert bma_logits.dim() == 2 and bma_logits.size(1) == 6  # N x C
-        return bma_logits
-    
+                if val_ys[i] == j:
+                    bin_index = int((val_predictions[i, j] - 0) * num_bins)
+                    
+                    if bin_index == num_bins:
+                        bin_index = num_bins - 1  # Adjust for the last bin
+                    
+                    bin_counts[bin_index] += 1
+
+            # Calculate the threshold as the upper edge of the bin with the highest count
+            max_bin_count = max(bin_counts)
+            max_bin_index = np.argmax(bin_counts)
+            self._prediction_threshold[j] = bin_edges[max_bin_index + 1]
+        
+        print(self._prediction_threshold)
+
+
     def predict_probabilities_swag(self, loader: torch.utils.data.DataLoader) -> torch.Tensor:
         """
         Perform Bayesian model averaging using your SWAG statistics and predict
@@ -467,22 +453,29 @@ class SWAGInference(object):
         The output should be a N-dimensional long tensor, containing values in {-1, 0, 1, 2, 3, 4, 5}.
         """
 
+        label_sample = []
+
         # label_probabilities contains the per-row maximum values in predicted_probabilities,
         # max_likelihood_labels the corresponding column index (equivalent to class).
         label_probabilities, max_likelihood_labels = torch.max(predicted_probabilities, dim=-1)
+        max_index = max_likelihood_labels
+        print(max_index.size())
+        print(max_likelihood_labels.size())
+        print(label_probabilities.size())
         num_samples, num_classes = predicted_probabilities.size()
         assert label_probabilities.size() == (num_samples,) and max_likelihood_labels.size() == (num_samples,)
 
         # A model without uncertainty awareness might simply predict the most likely label per sample:
         # return max_likelihood_labels
+        for i in range(num_samples):
+            print(max_likelihood_labels[i])
+            print(label_probabilities[i])
+            print(self._prediction_threshold[max_index[i]])
+            label_sample.append(max_likelihood_labels[i].item() if label_probabilities[i] >= self._prediction_threshold[max_index[i]] else -1)
 
         # A bit better: use a threshold to decide whether to return a label or "don't know" (label -1)
         # TODO(2): implement a different decision rule if desired
-        return torch.where(
-            label_probabilities >= self._prediction_threshold,
-            max_likelihood_labels,
-            torch.ones_like(max_likelihood_labels) * -1,
-        )
+        return torch.tensor(label_sample)
 
     def _create_weight_copy(self) -> typing.Dict[str, torch.Tensor]:
         """Create an all-zero copy of the network weights as a dictionary that maps name -> weight"""
@@ -636,7 +629,7 @@ class SWAGInference(object):
         for (batch_xs,) in loader:
             predictions.append(self.network(batch_xs))
 
-        predictions = torch.cat(predictions)/self.temperature
+        predictions = torch.cat(predictions)
         return torch.softmax(predictions, dim=-1)
 
     def _update_batchnorm(self) -> None:
@@ -922,94 +915,6 @@ class CNN(torch.nn.Module):
 
         return log_softmax
 
-
-def temperature_scale(logits, temperature):
-    """
-    Perform temperature scaling on logits
-    """
-    # Expand temperature to match the size of logits
-    temperature = temperature.unsqueeze(1).expand(logits.size(0), logits.size(1))
-    return logits / temperature
-
-def set_temperature(logits, labels):
-    """
-    Tune the tempearature of the model (using the validation set).
-    We're going to set it to optimize NLL.
-    """
-    temperature = torch.nn.Parameter(torch.ones(1) * 1.5)
-
-    nll_criterion = torch.nn.CrossEntropyLoss()
-    ece_criterion = _ECELoss()
-
-    # Calculate NLL and ECE before temperature scaling
-    before_temperature_nll = nll_criterion(logits, labels).item()
-    before_temperature_ece = ece_criterion(logits, labels).item()
-    print('Before temperature - NLL: %.3f, ECE: %.3f' % (before_temperature_nll, before_temperature_ece))
-
-    # Next: optimize the temperature w.r.t. NLL
-    optimizer = torch.optim.LBFGS([temperature], lr=0.01, max_iter=50)
-
-    def eval():
-        optimizer.zero_grad()
-        loss = nll_criterion(temperature_scale(logits, temperature), labels)
-        loss.backward()
-        return loss
-    for _ in range(5):
-        optimizer.step(eval)
-
-    # Calculate NLL and ECE after temperature scaling
-    after_temperature_nll = nll_criterion(temperature_scale(logits, temperature), labels).item()
-    after_temperature_ece = ece_criterion(temperature_scale(logits, temperature), labels).item()
-    print('Optimal temperature: %.3f' % temperature.item())
-    print('After temperature - NLL: %.3f, ECE: %.3f' % (after_temperature_nll, after_temperature_ece))
-
-    return temperature.item()
-
-
-class _ECELoss(torch.nn.Module):
-    """
-    Calculates the Expected Calibration Error of a model.
-    (This isn't necessary for temperature scaling, just a cool metric).
-
-    The input to this loss is the logits of a model, NOT the softmax scores.
-
-    This divides the confidence outputs into equally-sized interval bins.
-    In each bin, we compute the confidence gap:
-
-    bin_gap = | avg_confidence_in_bin - accuracy_in_bin |
-
-    We then return a weighted average of the gaps, based on the number
-    of samples in each bin
-
-    See: Naeini, Mahdi Pakdaman, Gregory F. Cooper, and Milos Hauskrecht.
-    "Obtaining Well Calibrated Probabilities Using Bayesian Binning." AAAI.
-    2015.
-    """
-    def __init__(self, n_bins=15):
-        """
-        n_bins (int): number of confidence interval bins
-        """
-        super(_ECELoss, self).__init__()
-        bin_boundaries = torch.linspace(0, 1, n_bins + 1)
-        self.bin_lowers = bin_boundaries[:-1]
-        self.bin_uppers = bin_boundaries[1:]
-
-    def forward(self, logits, labels):
-        softmaxes = torch.nn.functional.softmax(logits, dim=1)
-        confidences, predictions = torch.max(softmaxes, 1)
-        accuracies = predictions.eq(labels)
-
-        ece = torch.zeros(1, device=logits.device)
-        for bin_lower, bin_upper in zip(self.bin_lowers, self.bin_uppers):
-            # Calculated |confidence - accuracy| in each bin
-            in_bin = confidences.gt(bin_lower.item()) * confidences.le(bin_upper.item())
-            prop_in_bin = in_bin.float().mean()
-            if prop_in_bin.item() > 0:
-                accuracy_in_bin = accuracies[in_bin].float().mean()
-                avg_confidence_in_bin = confidences[in_bin].mean()
-                ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
-
-        return ece
 
 if __name__ == "__main__":
     main()
