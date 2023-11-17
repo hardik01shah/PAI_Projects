@@ -4,7 +4,7 @@ from scipy.optimize import fmin_l_bfgs_b
 # import additional ...
 from sklearn.gaussian_process.kernels import *
 from sklearn.gaussian_process import GaussianProcessRegressor
-
+from scipy.stats import norm
 
 # global variables
 DOMAIN = np.array([[0, 10]])  # restrict \theta in [0, 10]
@@ -18,7 +18,7 @@ RANDOM_STATE_F = 42
 KERNEL_V = (np.sqrt(2.0) * Matern(length_scale=1.0, nu=2.5, length_scale_bounds=[1e-2, 1e2])) + DotProduct() + 4.0
 # KERNEL_V = np.sqrt(2.0) * RBF(length_scale=1.0, length_scale_bounds=[1e-2, 1e2]) + DotProduct() + 4.0
 RANDOM_STATE_V = 42
-ACQUISITION_PENATLY_SCALE = 1
+ACQUISITION_PENATLY_SCALE = 10.0
 OPTIMIZE_GP = "fmin_l_bfgs_b"
 
 
@@ -112,10 +112,14 @@ class BO_algo():
         # TODO: Implement the acquisition function you want to optimize.
 
         f_pred, f_std = self.f_approx.predict(X = x, return_std = True)
-        v_pred = self.v_approx.predict(X = x)
+        v_pred, v_std = self.v_approx.predict(X = x, return_std = True)
 
         # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*(1/( 1 + np.exp(-v_pred)))
-        score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*max(0,v_pred)
+        # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*max(SAFETY_THRESHOLD,v_pred)
+        # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*max(0,SAFETY_THRESHOLD-v_pred)
+        score = (f_pred + f_std)*(SAFETY_THRESHOLD-(v_pred+v_std))
+        # score = (f_pred + f_std)*max(0,SAFETY_THRESHOLD-v_pred)
+        # score = 1-norm.cdf((SAFETY_THRESHOLD-f_pred)/f_std)
         
         return score
 
