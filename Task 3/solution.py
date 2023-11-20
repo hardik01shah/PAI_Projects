@@ -123,24 +123,39 @@ class BO_algo():
 
         # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*(1/( 1 + np.exp(-v_pred)))
         # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*max(SAFETY_THRESHOLD,v_pred)
-        # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*max(0,SAFETY_THRESHOLD-v_pred)
+
+        LR_1 = ACQUISITION_PENATLY_SCALE*max(0,v_pred - SAFETY_THRESHOLD) ## NOTE model 3
+        LR_2 = ACQUISITION_PENATLY_SCALE*max(0,v_pred + v_std - SAFETY_THRESHOLD) ## NOTE model 4
+
+
         # if (v_pred+v_std) < SAFETY_THRESHOLD:
         #     score = f_pred+f_std
         # else:
-        score = (f_pred + f_std)*(SAFETY_THRESHOLD-(v_pred+v_std)) 
-        return score
+
+        score_a = (f_pred + f_std)*(SAFETY_THRESHOLD - (v_pred+v_std))
+        score_b = (f_pred + f_std)*(SAFETY_THRESHOLD - (v_pred))
+        score_c = (f_pred + f_std)*(SAFETY_THRESHOLD - 2 - (v_pred))
+
+        return score_a
+    
         # score = (f_pred + STD_MULTIPLIER_F*f_std)*(SAFETY_THRESHOLD-(v_pred+STD_MULTIPLIER_V*v_std))
         # score = (f_pred + f_std)*max(0,SAFETY_THRESHOLD-v_pred)
         # score = 1-norm.cdf((SAFETY_THRESHOLD-f_pred)/f_std)
+
         vals = np.array(self.f_obs)
         max_point = np.max(vals[np.array(self.v_obs) < SAFETY_THRESHOLD])
         z = (max_point - f_pred)/f_std
 
         EI = f_std*(z*norm.cdf(z) + norm.pdf(z))
-        PF = norm.cdf((SAFETY_THRESHOLD-v_pred)/v_std)
-        score = PF*EI
+        PF = norm.cdf((SAFETY_THRESHOLD-v_pred)/v_std) # NOTE model 2
+
+        score_0 = (f_pred + f_std) - LR_2
+        score_1 = (f_pred + f_std) - LR_1
+        score_2 = PF * EI
+        score_3 = EI - LR_1
+        score_4 = EI - LR_2
         
-        return score
+        return score_1
 
     def add_data_point(self, x: float, f: float, v: float):
         """
