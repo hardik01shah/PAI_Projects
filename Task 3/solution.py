@@ -18,7 +18,7 @@ RANDOM_STATE_F = 42
 KERNEL_V = (np.sqrt(2.0) * Matern(length_scale=1.0, nu=2.5, length_scale_bounds=[1e-2, 1e2])) + DotProduct()
 # KERNEL_V = np.sqrt(2.0) * RBF(length_scale=1.0, length_scale_bounds=[1e-2, 1e2]) + DotProduct()
 RANDOM_STATE_V = 42
-ACQUISITION_PENATLY_SCALE = 10.0
+ACQUISITION_PENATLY_SCALE = 1.0 # [0.1, 0.5, 1, 5, 10]
 OPTIMIZE_GP = "fmin_l_bfgs_b"
 N_RESTARTS = 1
 STD_MULTIPLIER_F = 1.5
@@ -134,7 +134,7 @@ class BO_algo():
 
         score_a = (f_pred + f_std)*(SAFETY_THRESHOLD - (v_pred+v_std))
         score_b = (f_pred + f_std)*(SAFETY_THRESHOLD - (v_pred))
-        score_c = (f_pred + f_std)*(SAFETY_THRESHOLD - 2 - (v_pred))
+        score_c = (f_pred + f_std)*(SAFETY_THRESHOLD - 2 - (v_pred+v_std))
 
         return score_a
     
