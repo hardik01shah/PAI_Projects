@@ -15,11 +15,14 @@ SAFETY_THRESHOLD = 4  # threshold, upper bound of SA
 KERNEL_F = 0.5 * Matern(length_scale=1.0, nu=2.5, length_scale_bounds=[1e-2, 1e2])
 # KERNEL_F = 0.5 * RBF(length_scale=1.0, length_scale_bounds=[1e-2, 1e2])
 RANDOM_STATE_F = 42
-KERNEL_V = (np.sqrt(2.0) * Matern(length_scale=1.0, nu=2.5, length_scale_bounds=[1e-2, 1e2])) + DotProduct() + 4.0
-# KERNEL_V = np.sqrt(2.0) * RBF(length_scale=1.0, length_scale_bounds=[1e-2, 1e2]) + DotProduct() + 4.0
+KERNEL_V = (np.sqrt(2.0) * Matern(length_scale=1.0, nu=2.5, length_scale_bounds=[1e-2, 1e2])) + DotProduct()
+# KERNEL_V = np.sqrt(2.0) * RBF(length_scale=1.0, length_scale_bounds=[1e-2, 1e2]) + DotProduct()
 RANDOM_STATE_V = 42
 ACQUISITION_PENATLY_SCALE = 10.0
 OPTIMIZE_GP = "fmin_l_bfgs_b"
+N_RESTARTS = 1
+STD_MULTIPLIER_F = 1.5
+STD_MULTIPLIER_V = 1.5
 
 
 # TODO: implement a self-contained solution in the BO_algo class.
@@ -29,8 +32,10 @@ class BO_algo():
         """Initializes the algorithm with a parameter configuration."""
         # TODO: Define all relevant class members for your BO algorithm here.
 
-        self.f_approx = GaussianProcessRegressor(kernel=KERNEL_F, random_state= RANDOM_STATE_F, alpha=0.15**2, optimizer=OPTIMIZE_GP)
-        self.v_approx = GaussianProcessRegressor(kernel=KERNEL_V, random_state= RANDOM_STATE_V, alpha=0.0001**2, optimizer=OPTIMIZE_GP)
+        # self.f_approx = GaussianProcessRegressor(kernel=KERNEL_F, random_state= RANDOM_STATE_F, alpha=0.15**2, optimizer=OPTIMIZE_GP, n_restarts_optimizer=N_RESTARTS)
+        # self.v_approx = GaussianProcessRegressor(kernel=KERNEL_V, random_state= RANDOM_STATE_V, alpha=0.0001**2, optimizer=OPTIMIZE_GP, n_restarts_optimizer=N_RESTARTS)
+        self.f_approx = GaussianProcessRegressor(kernel=KERNEL_F, random_state=RANDOM_STATE_F, alpha=0.15**2)
+        self.v_approx = GaussianProcessRegressor(kernel=KERNEL_V, random_state=RANDOM_STATE_V, alpha=0.0001**2)
         self.points = []
         self.f_obs = []
         self.v_obs = []
@@ -44,6 +49,7 @@ class BO_algo():
         # print(np.array(self.points).shape)
         self.f_approx.fit(X = np.array(self.points).reshape(-1, 1), y = np.array(self.f_obs))
         self.v_approx.fit(X = np.array(self.points).reshape(-1, 1), y = np.array(self.v_obs))
+        # self.v_approx.fit(X = np.array(self.points).reshape(-1, 1), y = np.array(self.v_obs)-4.0)
 
         return
 
@@ -113,13 +119,26 @@ class BO_algo():
 
         f_pred, f_std = self.f_approx.predict(X = x, return_std = True)
         v_pred, v_std = self.v_approx.predict(X = x, return_std = True)
+        # v_pred+=4.0 # prior mean
 
         # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*(1/( 1 + np.exp(-v_pred)))
         # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*max(SAFETY_THRESHOLD,v_pred)
         # score = (f_pred + f_std) - ACQUISITION_PENATLY_SCALE*max(0,SAFETY_THRESHOLD-v_pred)
-        score = (f_pred + f_std)*(SAFETY_THRESHOLD-(v_pred+v_std))
+        # if (v_pred+v_std) < SAFETY_THRESHOLD:
+        #     score = f_pred+f_std
+        # else:
+        score = (f_pred + f_std)*(SAFETY_THRESHOLD-(v_pred+v_std)) 
+        return score
+        # score = (f_pred + STD_MULTIPLIER_F*f_std)*(SAFETY_THRESHOLD-(v_pred+STD_MULTIPLIER_V*v_std))
         # score = (f_pred + f_std)*max(0,SAFETY_THRESHOLD-v_pred)
         # score = 1-norm.cdf((SAFETY_THRESHOLD-f_pred)/f_std)
+        vals = np.array(self.f_obs)
+        max_point = np.max(vals[np.array(self.v_obs) < SAFETY_THRESHOLD])
+        z = (max_point - f_pred)/f_std
+
+        EI = f_std*(z*norm.cdf(z) + norm.pdf(z))
+        PF = norm.cdf((SAFETY_THRESHOLD-v_pred)/v_std)
+        score = PF*EI
         
         return score
 
