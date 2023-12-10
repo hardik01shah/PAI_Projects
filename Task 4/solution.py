@@ -231,7 +231,7 @@ class Agent:
         # Feel free to instantiate any other parameters you feel you might need.   
         self.actor = Actor(
             hidden_size=256,
-            hidden_layers=2,
+            hidden_layers=3,
             actor_lr=0.003,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
@@ -239,7 +239,7 @@ class Agent:
         )
         self.critic_1 = Critic(
             hidden_size=256,
-            hidden_layers=2,
+            hidden_layers=3,
             critic_lr=0.003,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
@@ -247,7 +247,7 @@ class Agent:
         )
         self.critic_2 = Critic(
             hidden_size=256,
-            hidden_layers=2,
+            hidden_layers=3,
             critic_lr=0.003,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
@@ -255,7 +255,7 @@ class Agent:
         )
         self.value = Value(
             hidden_size=256,
-            hidden_layers=2,
+            hidden_layers=3,
             value_lr=0.003,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
@@ -263,15 +263,15 @@ class Agent:
         )
         self.target_value = Value(
             hidden_size=256,
-            hidden_layers=2,
+            hidden_layers=3,
             value_lr=0.003,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
             device=self.device
         )
         self.alpha = TrainableParameter(
-            init_param=2,
-            lr_param=0.0001,
+            init_param=5,
+            lr_param=0.003,
             train_param=False,
             device=self.device
         )
@@ -369,6 +369,7 @@ class Agent:
         q2_old = self.critic_2.critic_network(torch.cat([s_batch, a_batch], dim=1))
         critic_loss = ((0.5 * torch.nn.functional.mse_loss(q1_old, q_hat)) +
                        (0.5 * torch.nn.functional.mse_loss(q2_old, q_hat)))
+        # critic_loss.backward(retain_graph=True)
         critic_loss.backward()
         self.critic_1.optimizer.step()
         self.critic_2.optimizer.step()
