@@ -24,9 +24,34 @@ class NeuralNetwork(nn.Module):
         # with a variable number of hidden layers and hidden units.
         # Here you should define layers which your network will use.
 
+        act_fn = None
+        if activation == 'relu':
+            act_fn = nn.ReLU()
+        elif activation == 'tanh':
+            act_fn = nn.Tanh()
+        elif activation == 'sigmoid':
+            act_fn = nn.Sigmoid()
+        else:
+            raise NotImplementedError('Activation function not implemented.')
+        
+        layers = []
+
+        for i in range(hidden_layers):
+            if i == 0:
+                layers.append(nn.Linear(input_dim, hidden_size))
+                layers.append(act_fn)
+            elif (i == hidden_layers - 1) and output_dim is not None:
+                layers.append(nn.Linear(hidden_size, output_dim))
+            else:
+                layers.append(nn.Linear(hidden_size, hidden_size))
+                layers.append(act_fn)
+        
+        self.model = nn.Sequential(*layers)            
+
     def forward(self, s: torch.Tensor) -> torch.Tensor:
         # TODO: Implement the forward pass for the neural network you have defined.
-        pass
+        
+        return self.model(s)
     
 class Actor:
     def __init__(self,hidden_size: int, hidden_layers: int, actor_lr: float,
@@ -49,7 +74,22 @@ class Actor:
         '''
         # TODO: Implement this function which sets up the actor network. 
         # Take a look at the NeuralNetwork class in utils.py. 
-        pass
+        self.actor_backbone = NeuralNetwork(
+            input_dim=self.state_dim,
+            output_dim=None,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            activation='relu'
+        )
+        self.mu = nn.Linear(self.hidden_size, self.action_dim)
+        self.sigma = nn.Linear(self.hidden_size, self.action_dim)
+
+        self.optimizer = optim.Adam(
+            params=list(self.actor_backbone.parameters()) + list(self.mu.parameters()) + list(self.sigma.parameters()),
+            lr=self.actor_lr)
+        self.actor_backbone.to(self.device)
+        self.mu.to(self.device)
+        self.sigma.to(self.device)
 
     def clamp_log_std(self, log_std: torch.Tensor) -> torch.Tensor:
         '''
@@ -74,6 +114,21 @@ class Actor:
         # TODO: Implement this function which returns an action and its log probability.
         # If working with stochastic policies, make sure that its log_std are clamped 
         # using the clamp_log_std function.
+
+        logits = self.actor_backbone(state)
+        mu = self.mu(logits)
+        std_unclamped = torch.nn.functional.relu(self.sigma(logits)+1e-6)
+        std = torch.exp(self.clamp_log_std(torch.log(std_unclamped)))
+        probs = Normal(mu, std)
+        if deterministic:
+            actions = probs.sample()
+        else:
+            actions = probs.rsample()
+        action = torch.tanh(actions)
+        log_prob = probs.log_prob(actions) 
+        log_prob -= torch.log(1 - action.pow(2) + 1e-6)
+        log_prob = log_prob.sum(1, keepdim=True)
+
         assert action.shape == (state.shape[0], self.action_dim) and \
             log_prob.shape == (state.shape[0], self.action_dim), 'Incorrect shape for action or log_prob.'
         return action, log_prob
@@ -95,7 +150,47 @@ class Critic:
     def setup_critic(self):
         # TODO: Implement this function which sets up the critic(s). Take a look at the NeuralNetwork 
         # class in utils.py. Note that you can have MULTIPLE critic networks in this class.
-        pass
+        self.critic_network = NeuralNetwork(
+            input_dim=self.state_dim + self.action_dim,
+            output_dim=1,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            activation='relu'
+        )
+        self.optimizer = optim.Adam(
+            params=self.critic_network.parameters(),
+            lr=self.critic_lr
+        )
+        
+        self.critic_network.to(self.device)
+
+class Value:
+    def __init__(self, hidden_size: int, 
+                 hidden_layers: int, value_lr: int, state_dim: int = 3, 
+                    action_dim: int = 1,device: torch.device = torch.device('cpu')):
+        super(Value, self).__init__()
+        self.hidden_size = hidden_size
+        self.hidden_layers = hidden_layers
+        self.value_lr = value_lr
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.device = device
+        self.setup_value()
+
+    def setup_value(self):
+        self.value_network = NeuralNetwork(
+            input_dim=self.state_dim,
+            output_dim=1,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            activation='relu'
+        )
+        self.optimizer = optim.Adam(
+            params=self.value_network.parameters(),
+            lr=self.value_lr
+        )
+        
+        self.value_network.to(self.device)
 
 class TrainableParameter:
     '''
@@ -134,7 +229,55 @@ class Agent:
     def setup_agent(self):
         # TODO: Setup off-policy agent with policy and critic classes. 
         # Feel free to instantiate any other parameters you feel you might need.   
-        pass
+        self.actor = Actor(
+            hidden_size=256,
+            hidden_layers=2,
+            actor_lr=0.003,
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            device=self.device
+        )
+        self.critic_1 = Critic(
+            hidden_size=256,
+            hidden_layers=2,
+            critic_lr=0.003,
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            device=self.device
+        )
+        self.critic_2 = Critic(
+            hidden_size=256,
+            hidden_layers=2,
+            critic_lr=0.003,
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            device=self.device
+        )
+        self.value = Value(
+            hidden_size=256,
+            hidden_layers=2,
+            value_lr=0.003,
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            device=self.device
+        )
+        self.target_value = Value(
+            hidden_size=256,
+            hidden_layers=2,
+            value_lr=0.003,
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            device=self.device
+        )
+        self.alpha = TrainableParameter(
+            init_param=2,
+            lr_param=0.0001,
+            train_param=False,
+            device=self.device
+        )
+
+        self.gamma = 0.99
+        self.tau = 0.005
 
     def get_action(self, s: np.ndarray, train: bool) -> np.ndarray:
         """
@@ -144,14 +287,17 @@ class Agent:
         :return: np.ndarray,, action to apply on the environment, shape (1,)
         """
         # TODO: Implement a function that returns an action from the policy for the state s.
-        action = np.random.uniform(-1, 1, (1,))
+        state = torch.Tensor([s]).to(self.device)
+        deterministic = not train
+        action, _ = self.actor.get_action_and_log_prob(state, deterministic)
+        action = action.cpu().detach().numpy()[0]
 
         assert action.shape == (1,), 'Incorrect action shape.'
         assert isinstance(action, np.ndarray ), 'Action dtype must be np.ndarray' 
         return action
 
     @staticmethod
-    def run_gradient_update_step(object: Union[Actor, Critic], loss: torch.Tensor):
+    def run_gradient_update_step(object: Union[Actor, Critic, Value], loss: torch.Tensor):
         '''
         This function takes in a object containing trainable parameters and an optimizer, 
         and using a given loss, runs one step of gradient update. If you set up trainable parameters 
@@ -159,7 +305,7 @@ class Agent:
         :param object: object containing trainable parameters and an optimizer
         '''
         object.optimizer.zero_grad()
-        loss.mean().backward()
+        loss.mean().backward(retain_graph=True)
         object.optimizer.step()
 
     def critic_target_update(self, base_net: NeuralNetwork, target_net: NeuralNetwork, 
@@ -193,9 +339,61 @@ class Agent:
         s_batch, a_batch, r_batch, s_prime_batch = batch
 
         # TODO: Implement Critic(s) update here.
+        value = self.value.value_network(s_batch)
+        target_value = self.target_value.value_network(s_prime_batch)
 
+        actions, log_probs = self.actor.get_action_and_log_prob(s_batch, deterministic=True)
+        q1 = self.critic_1.critic_network(torch.cat([s_batch, actions], dim=1))
+        q2 = self.critic_2.critic_network(torch.cat([s_batch, actions], dim=1))
+        critic_value = torch.min(q1, q2)
+
+        self.run_gradient_update_step(
+            self.value,
+            0.5 * torch.nn.functional.mse_loss(value, critic_value - log_probs)
+        )
+
+        actions, log_probs = self.actor.get_action_and_log_prob(s_batch, deterministic=False)
+        log_probs = log_probs
+        q1 = self.critic_1.critic_network(torch.cat([s_batch, actions], dim=1))
+        q2 = self.critic_2.critic_network(torch.cat([s_batch, actions], dim=1))
+        critic_value = torch.min(q1, q2)
+        self.run_gradient_update_step(
+            self.actor,
+            loss=torch.mean(log_probs - critic_value)
+        )
+
+        self.critic_1.optimizer.zero_grad()
+        self.critic_2.optimizer.zero_grad()
+        q_hat = self.alpha.get_param()*r_batch + self.gamma*target_value
+        q1_old = self.critic_1.critic_network(torch.cat([s_batch, a_batch], dim=1))
+        q2_old = self.critic_2.critic_network(torch.cat([s_batch, a_batch], dim=1))
+        critic_loss = ((0.5 * torch.nn.functional.mse_loss(q1_old, q_hat)) +
+                       (0.5 * torch.nn.functional.mse_loss(q2_old, q_hat)))
+        critic_loss.backward()
+        self.critic_1.optimizer.step()
+        self.critic_2.optimizer.step()
+        # self.run_gradient_update_step(
+        #     self.critic_1,
+        #     loss=critic_loss
+        # )
+        # self.run_gradient_update_step(
+        #     self.critic_2,
+        #     loss=critic_loss
+        # )
+        # self.run_gradient_update_step(
+        #     self.alpha,
+        #     loss=critic_loss
+        # )
+        
         # TODO: Implement Policy update here
+        
 
+        self.critic_target_update(
+            base_net=self.value.value_network,
+            target_net=self.target_value.value_network,
+            tau=self.tau,
+            soft_update=True
+        )
 
 # This main function is provided here to enable some basic testing. 
 # ANY changes here WON'T take any effect while grading.

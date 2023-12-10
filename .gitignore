@@ -9,3 +9,6 @@ Task 2/train_xs.npz
 Task 2/train_ys.npz
 Task 2/val_xs.npz
 Task 2/val_ys.npz
+
+Task 4/SAC_DEMO/*
+Task 4/__pycache__/*
