@@ -7,6 +7,7 @@ from gym.wrappers.monitoring.video_recorder import VideoRecorder
 import warnings
 from typing import Union
 from utils import ReplayBuffer, get_env, run_episode
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -224,54 +225,57 @@ class Agent:
         print("Using device: {}".format(self.device))
         self.memory = ReplayBuffer(self.min_buffer_size, self.max_buffer_size, self.device)
         
+        self.nn_lr = 0.003
+        self.hidden_size = 256
+        self.hidden_layers = 4
         self.setup_agent()
 
     def setup_agent(self):
         # TODO: Setup off-policy agent with policy and critic classes. 
         # Feel free to instantiate any other parameters you feel you might need.   
         self.actor = Actor(
-            hidden_size=256,
-            hidden_layers=3,
-            actor_lr=0.003,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            actor_lr=self.nn_lr,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
             device=self.device
         )
         self.critic_1 = Critic(
-            hidden_size=256,
-            hidden_layers=3,
-            critic_lr=0.003,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            critic_lr=self.nn_lr,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
             device=self.device
         )
         self.critic_2 = Critic(
-            hidden_size=256,
-            hidden_layers=3,
-            critic_lr=0.003,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            critic_lr=self.nn_lr,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
             device=self.device
         )
         self.value = Value(
-            hidden_size=256,
-            hidden_layers=3,
-            value_lr=0.003,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            value_lr=self.nn_lr,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
             device=self.device
         )
         self.target_value = Value(
-            hidden_size=256,
-            hidden_layers=3,
-            value_lr=0.003,
+            hidden_size=self.hidden_size,
+            hidden_layers=self.hidden_layers,
+            value_lr=self.nn_lr,
             state_dim=self.state_dim,
             action_dim=self.action_dim,
             device=self.device
         )
         self.alpha = TrainableParameter(
             init_param=5,
-            lr_param=0.003,
+            lr_param=0.0003,
             train_param=False,
             device=self.device
         )
@@ -423,10 +427,10 @@ if __name__ == '__main__':
     if save_video:
         video_rec = VideoRecorder(env, "pendulum_episode.mp4")
     
-    for EP in range(TEST_EPISODES):
+    for EP in tqdm(range(TEST_EPISODES)):
         rec = video_rec if (save_video and EP == TEST_EPISODES - 1) else None
         with torch.no_grad():
-            episode_return = run_episode(env, agent, rec, verbose, train=False)
+            episode_return = run_episode(env, agent, rec, False, train=False)
         test_returns.append(episode_return)
 
     avg_test_return = np.mean(np.array(test_returns))
